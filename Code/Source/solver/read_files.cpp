@@ -2052,6 +2052,11 @@ void read_ls(Simulation* simulation, EquationParameters* eq_params, consts::Solv
     LinearAlgebra::check_equation_compatibility(domain.phys,  lEq.linear_algebra_type, lEq.linear_algebra_assembly_type);
   }
 
+  // Check that Block nested preconditioner is used with the FGMRES solver and with the 
+  // PETSc linear algebra type.
+  LinearAlgebra::check_solver_pc_linearalgebra_compatibility(lEq.ls.LS_type, 
+    lEq.linear_algebra_type, lEq.linear_algebra_preconditioner);
+    
   if (!solver_type_defined) {
     return;
   } 

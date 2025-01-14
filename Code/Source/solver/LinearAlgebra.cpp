@@ -64,6 +64,26 @@ void LinearAlgebra::check_equation_compatibility(const consts::EquationType eq_p
   }
 }
 
+void LinearAlgebra::check_solver_pc_linearalgebra_compatibility(const consts::SolverType solver_type,
+    const consts::LinearAlgebraType lin_alg_type, consts::PreconditionerType prec_type)
+{
+  using namespace consts;
+
+  // Check that the solver type is compatible with the linear algebra type. 
+  //
+  if ((solver_type == SolverType::lSolver_FGMRES) || 
+      (prec_type == PreconditionerType::PREC_PETSC_NESTEDBLOCK)) {
+    if (lin_alg_type != LinearAlgebraType::petsc) {
+      throw std::runtime_error("[svMultiPhysics] FGMRES solver and the block nested preconditioner require PETSc linear algebra.");
+      }
+  }
+
+  if ((prec_type == PreconditionerType::PREC_PETSC_NESTEDBLOCK) &&
+      (solver_type != SolverType::lSolver_FGMRES)) {
+    throw std::runtime_error("[svMultiPhysics] Block nested preconditioner requires FGMRES solver.");
+  }
+}
+
 LinearAlgebra::LinearAlgebra()
 {
 }

@@ -200,6 +200,9 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
         case SolverType::lSolver_BICGS:
             KSPSetType(psol[cEq].ksp, KSPBCGS);
             break;
+        case SolverType::lSolver_FGMRES:
+            KSPSetType(psol[cEq].ksp, KSPFGMRES);
+            break;
         default:
             PetscPrintf(MPI_COMM_WORLD, "ERROR <PETSC_CREATE_LINEARSOLVER>: "
             "linear solver type not supported through svFSI input file.\n"
@@ -209,6 +212,7 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
     }
     
     /* Set preconditioner */
+    psol[cEq].bnpc = PETSC_FALSE;
     psol[cEq].rcs = PETSC_FALSE;
     KSPGetPC(psol[cEq].ksp, &pc);
 
@@ -216,6 +220,40 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
     {
         case PreconditionerType::PREC_PETSC_JACOBI:
             PCSetType(pc, PCJACOBI);
+        break;
+
+        case PreconditionerType::PREC_PETSC_NESTEDBLOCK: // To be used with FGMRES solver
+            psol[cEq].bnpc = PETSC_TRUE;
+            PCSetType(pc, PCSHELL);
+
+            const double default_rtol0 = 1.0e-5;
+            const double default_atol0 = 1.0e-50;
+            const double default_dtol0 = 1.0e50;
+            const int default_maxit0 = 10000;
+
+            const double default_rtol1 = 1.0e-5;
+            const double default_atol1 = 1.0e-50;
+            const double default_dtol1 = 1.0e50;
+            const int default_maxit1 = 10000;
+
+            // Create the block nested preconditioner context object
+            BlockNestedPreconditioner *block_nested_pc_context = new BlockNestedPreconditioner(
+                default_rtol0, default_atol0, default_dtol0, default_maxit0,
+                default_rtol1, default_atol1, default_dtol1, default_maxit1);
+
+            // Attach the context to the PCSHELL
+            PCShellSetContext(pc, block_nested_pc_context);
+            PCShellSetApply(pc, [](PC pc, Vec r, Vec z) -> PetscErrorCode {
+                BlockNestedPreconditioner *ctx;
+                PCShellGetContext(pc, &ctx);
+                return ctx->BlockNestedPC_Apply(pc, r, z);
+            });
+            PCShellSetDestroy(pc, [](PC pc) -> PetscErrorCode {
+                BlockNestedPreconditioner *ctx;
+                PCShellGetContext(pc, &ctx);
+                delete ctx;
+                return 0;
+            });
         break;
 
         case PreconditionerType::PREC_PETSC_RCS:
@@ -303,6 +341,15 @@ void petsc_solve(PetscReal *resNorm,  PetscReal *initNorm,  PetscReal *dB,
     PetscMalloc1(na, &a);
     PetscTime(&ts);
     KSPSetOperators(psol[cEq].ksp, psol[cEq].A, psol[cEq].A);
+
+    // Update the PCSHELL context with the tangent matrix
+    if (psol[cEq].bnpc) {
+        Mat Amat;
+        BlockNestedPreconditioner *ctx;
+        PCShellGetContext(psol[cEq].pc, &ctx);
+        KSPGetOperators(psol[cEq].ksp, &Amat, NULL)
+        ctx->BlockNestedPC_SetMatrix(Amat);
+    }
 
     /* Calculate residual for direct solver. KSP uses preconditioned norm. */
     PetscObjectTypeCompare((PetscObject)psol[cEq].ksp, KSPPREONLY, &usepreonly);
@@ -402,6 +449,10 @@ void petsc_destroy_all(const PetscInt nEq)
             VecDestroy(&psol[cEq].b);
             MatDestroy(&psol[cEq].A);
             KSPDestroy(&psol[cEq].ksp);
+
+            if (psol[cEq].bnpc) {
+                psol[cEq].bnpc = PETSC_FALSE;
+            }
 
             if (psol[cEq].rcs) {
                 psol[cEq].rcs = PETSC_FALSE;
@@ -1105,3 +1156,308 @@ void PetscLinearAlgebra::PetscImpl::solve(ComMod& com_mod, eqType& lEq, const Ve
 
 }
 
+//-----------------------------------------------
+// Block Nested Preconditioner
+//-----------------------------------------------
+//
+
+BlockNestedPreconditioner::BlockNestedPreconditioner( 
+    const double &rtol0, const double &atol0, 
+    const double &dtol0, const int &maxit0,
+    const double &rtol1, const double &atol1, 
+    const double &dtol1, const int &maxit1)
+{
+    PetscInt  i, j, ii, jj;
+    PetscInt *uindx, *pindx;
+
+    // Create objects for internal linear solvers
+    solver_0 = new BlockNestedPC_InternalLinearSolver( rtol0, atol0, dtol0, maxit0, 
+        "ls0_", "pc0_" );
+
+    solver_1 = new BlockNestedPC_InternalLinearSolver( rtol1, atol1, dtol1, maxit1,
+        "ls1_", "pc1_" );
+
+    // Create index set for velocity and pressure block 
+    PetscCall(PetscMalloc2((dof-1)*plhs.mynNo, &uindx, plhs.mynNo, &pindx));
+    for (i = 0; i < plhs.mynNo; i++){
+        ii = (dof-1)*i;
+        jj = dof*plhs.ltg[i];
+        for (j = 0; j < dof-1; j++){
+            uindx[ii+j] = jj + j;
+        }
+        pindx[i] = jj + dof - 1;
+    }
+    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, (dof-1)*plhs.mynNo, uindx, PETSC_COPY_VALUES, &velocity_is));
+    PetscCall(ISSetBlockSize(velocity_is, dof-1));
+    PetscCall(ISSort(velocity_is));
+    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, plhs.mynNo, pindx, PETSC_COPY_VALUES, &pressure_is));
+    PetscCall(ISSort(pressure_is));
+
+    // Initialize block matrices to NULL
+    A_00 = NULL;
+    A_01 = NULL;
+    A_10 = NULL;
+    A_11 = NULL;
+
+    // Initialize r_0, r_1 and z_0, z_1 based on velocity index set
+    PetscInt local_size_v, local_size_p;
+    PetscCall(ISGetLocalSize(velocity_is, &local_size_v));
+    PetscCall(VecCreateMPI(MPI_COMM_WORLD, local_size_v, PETSC_DECIDE, &r_0));
+    PetscCall(VecDuplicate(r_0, &z_0)); 
+
+    PetscCall(ISGetLocalSize(pressure_is, &local_size_p));
+    PetscCall(VecCreateMPI(MPI_COMM_WORLD, local_size_p, PETSC_DECIDE, &r_1));
+    PetscCall(VecDuplicate(r_1, &z_1)); 
+
+    PetscCall(PetscFree2(uindx, pindx));
+}
+
+BlockNestedPreconditioner::~BlockNestedPreconditioner()
+{
+  // Clean up internal linear solvers
+  delete solver_0; delete solver_1;
+  // Clean up index sets
+  ISDestroy(&velocity_is); ISDestroy(&pressure_is);
+  // Clean up block matrices
+  MatDestroy(&A_00); MatDestroy(&A_01); MatDestroy(&A_10); MatDestroy(&A_11);
+  // Clean up sub-vectors
+  VecDestroy(&r_0); VecDestroy(&r_1);
+  VecDestroy(&z_0); VecDestroy(&z_1);
+}
+
+PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec z) 
+{
+    // Split the residual vector r into velocity (r_0) and pressure (r_1) components
+    PetscCall(VecGetSubVector(r, velocity_is, &r_0)); 
+    PetscCall(VecGetSubVector(r, pressure_is, &r_1));
+
+    // Intermediate solver
+    //-------------------------------------------------
+    // z_0 = A_00^{-1} * r_0 -> solver_0
+    //-------------------------------------------------
+    PC pc_0;
+    PetscCall(solver_0->GetPC(&pc_0));
+    PetscCall(PCSetType(pc_0, PCHYPRE));
+    PCHYPRESetType(pc, "boomeramg");
+    PetsCall(solver_0->SetOperators(A_00));
+    PetscCall(solver_0->Solve(r_0, z_0, PETSC_FALSE));
+
+    //-------------------------------------------------
+    // r_1 - A_10 * z_0
+    //-------------------------------------------------
+    PetscCall(MatMult(A_10, z_0, z_0));
+    z_1 = r_1 - z_0;
+
+    //-------------------------------------------------
+    // S * z_1 = r_1 - A_10 * z_0 -> inner solver
+    // S = A_11 - A_10 * A_00^{-1} * A_01
+    // matrix-free alghorithm for S involves application
+    // of S to a vector x = r_1 - A_10 * z_0 and using 
+    // GMRES solver to solve for z_1
+    //-------------------------------------------------
+    PC pc_1;
+    PetscCall(solver_1->GetPC(&pc_1));
+    PetscCall(PCSetType(pc_1, PCHYPRE));
+    PCHYPRESetType(pc, "boomeramg");
+    solver_1->SchurComplement = new MatrixFreeSchurComplement(A_00, A_01, A_10, A_11, solver_0);
+    PetscCall(solver_1->SchurComplement->ApplySchurComplement());
+    PetscCall(solver_1->Setoperators(solver_1->SchurComplement->S));
+    PetscCall(sovler_1->Solve(z_1, z_1, PETSC_FALSE));
+
+    // Update the momentum residual: r_0 = r_0 - A_01 * z_1
+    PetscCall(MatMul(A_01, z_1, z_0));
+    PetscCall(VecWAXPY(z_0, -1.0, z_0, r_0));
+
+    // Solve A_00 * z_0 = r_0
+    PetscCall(solver_0->solve(z_0, z_0, PETSC_FALSE));
+
+     // Combine results back into the full vector z = PC^{-1} * r
+    PetscCall(VecSetValues(z, velocity_is, z_0, INSERT_VALUES)); // Velocity result
+    PetscCall(VecSetValues(z, pressure_is, z_1, INSERT_VALUES)); // Pressure result
+    PetscCall(VecAssemblyBegin(z));
+    PetscCall(VecAssemblyEnd(z));
+
+    // Cleanup sub-vectors
+    PetscCall(VecRestoreSubVector(r, velocity_is, &r_0));
+    PetscCall(VecRestoreSubVector(r, pressure_is, &r_1));
+
+    PetscFunctionReturn(0);
+}
+
+PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_SetMatrix(Mat A) {
+    
+    tangent_matrix = A;
+
+    if (A_00 == NULL) {
+        // Extract submatrices for the first time
+        MatGetSubMatrix(A, velocity_is, velocity_is, MAT_INITIAL_MATRIX, &A_00);
+        MatGetSubMatrix(A, velocity_is, pressure_is, MAT_INITIAL_MATRIX, &A_01);
+        MatGetSubMatrix(A, pressure_is, velocity_is, MAT_INITIAL_MATRIX, &A_10);
+        MatGetSubMatrix(A, pressure_is, pressure_is, MAT_INITIAL_MATRIX, &A_11);
+    } else {
+        // Reuse existing submatrices by updating their values
+        MatGetSubMatrix(A, velocity_is, velocity_is, MAT_REUSE_MATRIX, &A_00);
+        MatGetSubMatrix(A, velocity_is, pressure_is, MAT_REUSE_MATRIX, &A_01);
+        MatGetSubMatrix(A, pressure_is, velocity_is, MAT_REUSE_MATRIX, &A_10);
+        MatGetSubMatrix(A, pressure_is, pressure_is, MAT_REUSE_MATRIX, &A_11);
+    }
+
+    return 0;
+}
+//-------------------------------------------------------------------------
+// Internal Linear solver for the Block Nested Preconditioner: 
+// solver_0, solver_1
+//-------------------------------------------------------------------------
+
+BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver()
+: rtol( 1.0e-5 ), atol( 1.0e-50 ), dtol( 1.0e50 ), maxits(10000)
+{
+    KSPCreate(MPI_COMM_WORLD, &ksp);
+    KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
+    KSPSetType(ksp, KSPGMRES);
+    KSPSetFromOptions(ksp);
+} 
+
+BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
+    const double &input_rtol, const double &input_atol,
+    const double &input_dtol, const int &input_maxits)
+: rtol( input_rtol ), atol( input_atol ),
+  dtol( input_dtol ), maxits( input_maxits )
+{
+    KSPCreate(MPI_COMM_WORLD, &ksp);
+    KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
+    KSPSetType(ksp, KSPGMRES);
+    KSPSetFromOptions(ksp);
+}
+
+BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
+    const double &input_rtol, const double &input_atol,
+    const double &input_dtol, const int &input_maxits, 
+    const char * const &ksp_prefix, const char * const &pc_prefix )
+: rtol( input_rtol ), atol( input_atol ),
+  dtol( input_dtol ), maxits( input_maxits )
+{
+    KSPCreate(MPI_COMM_WORLD, &ksp);
+    KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
+    KSPSetType(ksp, KSPGMRES);
+    KSPSetOptionsPrefix( ksp, ksp_prefix );
+
+    PC ksp_pc;
+    KSPGetPC( ksp, &ksp_pc );
+    PCSetOptionsPrefix( ksp_pc, pc_prefix );
+  
+    KSPSetFromOptions(ksp);
+    PCSetFromOptions(ksp_pc);
+}
+
+BlockNestedPC_InternalLinearSolver::~BlockNestedPC_InternalLinearSolver()
+{
+  KSPDestroy(&ksp);
+}
+
+void BlockNestedPC_InternalLinearSolver::Solve( const Vec &G, Vec &out_sol, const bool &isPrint )
+{
+  KSPSolve(ksp, G, out_sol);
+
+  if( isPrint )
+  {
+    PetscInt its;
+    KSPGetIterationNumber(ksp, &its);
+    PetscReal resnorm;
+    KSPGetResidualNorm(ksp, &resnorm);
+    PetscPrintf(MPI_COMM_WORLD, "  --- KSP: %d, %e", its, resnorm);
+  }
+}
+
+void BlockNestedPC_InternalLinearSolver::Solve( const Mat &K, const Vec &G, Vec &out_sol,
+   const bool &isPrint )
+{
+  KSPSetOperators(ksp, K, K);
+  KSPSolve(ksp, G, out_sol);
+
+  if( isPrint )
+  {
+    PetscInt its;
+    KSPGetIterationNumber(ksp, &its);
+    PetscReal resnorm;
+    KSPGetResidualNorm(ksp, &resnorm);
+    PetscPrintf(MPI_COMM_WORLD, "  --- KSP: %d, %e", its, resnorm);
+  }
+}
+
+void BlockNestedPC_InternalLinearSolver::Monitor() const
+{
+  PetscViewerAndFormat *vf;
+  PetscViewerAndFormatCreate(PETSC_VIEWER_STDOUT_WORLD,PETSC_VIEWER_DEFAULT,&vf);
+  KSPMonitorSet(ksp,(PetscErrorCode (*)(KSP,PetscInt,PetscReal,void*))KSPMonitorDefault,vf,(PetscErrorCode (*)(void**))PetscViewerAndFormatDestroy);
+}
+
+MatrixFreeSchurComplement::MatrixFreeSchurComplement( Mat A_00, Mat A_01, Mat A_10, Mat A_11, 
+    BlockNestedPC_InternalLinearSolver* solver_0 )
+{
+    PetscInt m, n;
+
+    // Initialize the matrix-free context
+    PetscCall(PetscMalloc1(1, &MatShellCtx));
+
+    MatShellCtx->A00 = A_00;
+    MatShellCtx->A01 = A_01;
+    MatShellCtx->A10 = A_10;
+    MatShellCtx->A11 = A_11;
+
+    MatShellCtx->ASolver = solver_0;
+
+    // Define the size of the Schur complement
+    PetscCall(MatGetSize(MatShellCtx->A11, &m, &n));
+
+    // Create the shell matrix for the Schur complement
+    PetscCall(MatCreateShell(MPI_COMM_WORLD, m, n, PETSC_DECIDE, PETSC_DECIDE, MatShellCtx, &S));
+}
+
+MatrixFreeSchurComplement::~MatrixFreeSchurComplement()
+{
+    PetscCall(MatDestroy(&S));
+    PetscCall(PetscFree(MatShellCtx));
+}
+
+// Method to set the Schur complement operation
+PetscErrorCode MatrixFreeSchurComplement::ApplySchurComplement() {
+    PetscFunctionBeginUser;
+    PetscCall(MatShellSetOperation(S, MATOP_MULT, (void (*)(void))SchurComplMult));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// Custom matrix-vector multiplication function for Schur complement
+// y = mat * x
+// mat -> Schur complement matrix (not explicitly defined)
+// x -> input vector ( it is the residual from the GMRES )
+// y -> output vector ( it will form the krylov subspace in the GMRES )
+PetscErrorCode SchurComplMult(Mat mat, Vec x, Vec y) {
+
+    Vec a11xp, a01xp, a00inv_a01xp;
+    
+    PetscFunctionBeginUser;
+
+    ShellMatrixContext *ctx;
+    PetscCall(MatShellGetContext(mat, &ctx));
+
+    // Krylove subspace: S * x
+    // A11 * x
+    PetscCall(MatMult(ctx->A11, x, a11xp));
+
+    // A01 * x
+    PetscCall(MatMult(ctx->A01, x, a01xp));
+
+    // A00^{-1} * (A01 * x)
+    ctx->ASolver->Solve(a01xp, a00inv_a01xp, PETSC_FALSE);
+
+    // (A10 * A00^{-1} * A01) * x
+    PetscCall(MatMult(ctx->A10, a00inv_a01xp, a01xp));
+
+    // y = ( A11 - A10 * A00^{-1} * A01 ) * x
+    PetscCall(VecWAXPY(y, -1.0, a01xp, a11xp)); 
+
+    PetscCall(VecDestroy(&a11xp, &a01xp, &a00inv_a01xp));   
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+}

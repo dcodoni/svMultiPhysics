@@ -436,7 +436,8 @@ enum class PreconditionerType
   PREC_TRILINOS_ML = 708,
   PREC_RCS = 709,
   PREC_PETSC_JACOBI = 710,
-  PREC_PETSC_RCS = 711
+  PREC_PETSC_RCS = 711,
+  PREC_PETSC_NESTEDBLOCK = 712
 };
 
 extern const std::set<PreconditionerType> fsils_preconditioners;
@@ -453,7 +454,8 @@ enum class SolverType
   lSolver_CG = 798, 
   lSolver_GMRES = 797, 
   lSolver_NS = 796,
-  lSolver_BICGS = 795
+  lSolver_BICGS = 795,
+  lSolver_FGMRES = 794
 };
 
 /// Map for solver type string to SolverType enum. 

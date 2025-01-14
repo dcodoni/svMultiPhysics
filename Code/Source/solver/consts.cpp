@@ -250,6 +250,7 @@ const std::set<PreconditionerType> fsils_preconditioners = {
 
 /// @brief The list of PETSc preconditioners. 
 const std::set<PreconditionerType> petsc_preconditioners = {
+  PreconditionerType::PREC_PETSC_NESTEDBLOCK,
   PreconditionerType::PREC_PETSC_JACOBI,
   PreconditionerType::PREC_PETSC_RCS
 };
@@ -272,6 +273,7 @@ const std::map<std::string,PreconditionerType> preconditioner_name_to_type =
   {"trilinos-ict", PreconditionerType::PREC_TRILINOS_ICT},
   {"trilinos-ml", PreconditionerType::PREC_TRILINOS_ML},
 
+  {"petsc-blocknested", PreconditionerType::PREC_PETSC_NESTEDBLOCK},
   {"petsc-jacobi", PreconditionerType::PREC_PETSC_JACOBI},
   {"petsc-rcs", PreconditionerType::PREC_PETSC_RCS}
 };
@@ -289,6 +291,7 @@ const std::map<PreconditionerType, std::string> preconditioner_type_to_name {
   {PreconditionerType::PREC_TRILINOS_IC, "trilinos-ic"}, 
   {PreconditionerType::PREC_TRILINOS_IC, "trilinos-ict"}, 
   {PreconditionerType::PREC_TRILINOS_ML, "trilinos-ml"},
+  {PreconditionerType::PREC_PETSC_NESTEDBLOCK, "petsc-blocknested"},
   {PreconditionerType::PREC_PETSC_JACOBI, "petsc-jacobi"},
   {PreconditionerType::PREC_PETSC_RCS, "petsc-rcs"}
 };
@@ -301,6 +304,8 @@ const std::map<std::string,SolverType> solver_name_to_type
   {"ns", SolverType::lSolver_NS},
   {"bpn", SolverType::lSolver_NS},
   {"bipn", SolverType::lSolver_NS},
+
+  {"fgmres", SolverType::lSolver_FGMRES},
 
   {"gmres", SolverType::lSolver_GMRES},
 

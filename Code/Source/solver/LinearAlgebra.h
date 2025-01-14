@@ -43,6 +43,8 @@ class LinearAlgebra {
     static const std::map<consts::LinearAlgebraType, std::string> type_to_name;
     static void check_equation_compatibility(const consts::EquationType eq_phys, 
         const consts::LinearAlgebraType lin_alg_type, const consts::LinearAlgebraType assembly_type);
+    static void check_solver_pc_linearalgebra_compatibility(const consts::SolverType solver_type,
+        const consts::LinearAlgebraType lin_alg_type, consts::PreconditionerType prec_type);
 
     LinearAlgebra();
     virtual ~LinearAlgebra() { };
