@@ -122,7 +122,7 @@ void face_match(ComMod& com_mod, faceType& lFa, faceType& gFa, Vector<int>& ptr)
     blk[iBlk].n = blk[iBlk].n + 1;
   }
 
-  for (int a = 0; a < gFa.nNo; a++) {
+  for (int a = 0; a < lFa.nNo; a++) {
     auto coord = lFa.x.col(a);
     int iBlk = find_blk(nsd, nBlkd, nFlt, xMin, dx, coord);
     auto minS = std::numeric_limits<double>::max();
@@ -1744,9 +1744,8 @@ void read_files(Simulation* simulation, const std::string& file_name)
 
     if (eq.phys == EquationType::phys_heatF) {   
       auto& eq1_params = simulation->parameters.equation_parameters[0];
-      auto& general_params = simulation->parameters.general_simulation_parameters;
       auto eq1_type = eq1_params->type.value();
-      if ((eq1_type != "fluid") && (eq1_type != "FSI") && (!general_params.use_precomputed_solution.value())) {
+      if ((eq1_type != "fluid") && (eq1_type != "FSI") && (!com_mod.usePrecomp)) {
         throw std::runtime_error("heatF equation has to be specified after fluid/FSI equation");
       }
     }     
