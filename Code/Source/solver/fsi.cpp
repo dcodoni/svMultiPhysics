@@ -37,6 +37,7 @@
 #include "lhsa.h"
 #include "nn.h"
 #include "sv_struct.h"
+#include "ustruct.h"
 #include "utils.h"
 
 #include <array>
@@ -230,7 +231,10 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const Ar
           break;
 
           case Equation_ustruct:
-            throw std::runtime_error("[construct_fsi] USTRUCT3D_M not implemented");
+            //throw std::runtime_error("[construct_fsi] USTRUCT3D_M not implemented");
+            auto N0 = fs_1[0].N.col(g);
+            auto N1 = fs_1[1].N.col(g);
+            ustruct::ustruct_3d_m(com_mod, cep_mod, vmsStab, fs_1[0].eNoN, fs_1[1].eNoN, nFn, w, Jac, N0, N1, Nwx, al, yl, dl, bfl, fN, ya_l, lR, lK, lKd);
             //CALL USTRUCT3D_M(vmsStab, fs(1).eNoN, fs(2).eNoN, nFn, w, Jac, fs(1).N(:,g), fs(2).N(:,g), Nwx, al, yl, 
             //                 dl, bfl, fN, ya_l, lR, lK, lKd)
           break;
@@ -297,7 +301,11 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const Ar
           } break;
 
           case Equation_ustruct:
-            throw std::runtime_error("[construct_fsi] USTRUCT3D_C not implemented");
+            //throw std::runtime_error("[construct_fsi] USTRUCT3D_C not implemented");
+            auto N0 = fs_2[0].N.col(g);
+            auto N1 = fs_2[1].N.col(g);
+            ustruct::ustruct_3d_c(com_mod, cep_mod, vmsStab, fs_2[0].eNoN, fs_2[1].eNoN, w, Jac, N0, N1, Nwx, 
+            Nqx, al, yl, dl, bfl, lR, lK, lKd);
             //CALL USTRUCT3D_C(vmsStab, fs(1).eNoN, fs(2).eNoN, w, Jac, fs(1).N(:,g), fs(2).N(:,g), Nwx, Nqx, al, yl, dl, bfl, lR, lK, lKd)
           break;
         }
@@ -320,6 +328,9 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const Ar
       }
     } // g: loop
 
+    if (cPhys == Equation_ustruct) {
+      ustruct::ustruct_do_assem(com_mod, eNoN, ptr, lKd, lK, lR);
+    }
     eq.linear_algebra->assemble(com_mod, eNoN, ptr, lK, lR);
 
   } // e: loop
