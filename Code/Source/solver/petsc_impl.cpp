@@ -2158,6 +2158,13 @@ PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec 
     //solver_1->Monitor();
     ierr = solver_1->Solve(z_m[1], z_m[1], PETSC_TRUE);
     if (ierr) { std::cout << "Error in solver_1->Solve: " << ierr << std::endl;}
+
+    //====================== CONDITION NUMBER =======================
+    PetscReal sigma_max, sigma_min, cond_num;
+    KSPComputeExtremeSingularValues(solver_1->ksp, &sigma_max, &sigma_min);
+    cond_num = sigma_max / sigma_min;
+    std::cout << "Estimated condition number Schur matrix free: %g\n" << (double)cond_num << std::endl;
+    //====================== END CONDITION NUMBER =======================
     
     VecAssemblyBegin(z_m[1]); VecAssemblyEnd(z_m[1]);
 
@@ -2352,6 +2359,11 @@ BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
 
     KSPCreate(MPI_COMM_WORLD, &ksp);
     KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
+    
+    //================ CONDITION NUMBER ACTIVE =================
+    KSPSetComputeSingularValues(ksp, PETSC_TRUE);
+    //================ END CONDITION NUMBER ACTIVE =================
+
     KSPSetType(ksp, KSPGMRES);
     KSPSetOptionsPrefix(ksp, ksp_prefix);
     
@@ -2512,6 +2524,14 @@ PetscErrorCode MatrixFreeSchurComplement::SchurComplMult(Mat mat, Vec x, Vec y)
 
     // A00^{-1} * (A01 * x)
     ctx->ASolver->Solve(ctx->v_0, ctx->v_0, PETSC_FALSE);
+
+    //====================== CONDITION NUMBER =======================
+    PetscReal sigma_max, sigma_min, cond_num;
+    KSPComputeExtremeSingularValues(ctx->ASolver->ksp, &sigma_max, &sigma_min);
+    cond_num = sigma_max / sigma_min;
+    std::cout << "Estimated condition number Inner Solver: %g\n" << (double)cond_num << std::endl;
+    //====================== END CONDITION NUMBER =======================
+
     PetscCall(VecNorm(ctx->v_0, NORM_2, &norm_schur));
     // (A10 * A00^{-1} * A01) * x
     PetscCall(MatMult(ctx->A10, ctx->v_0, ctx->v_1_tmp));
@@ -2523,8 +2543,8 @@ PetscErrorCode MatrixFreeSchurComplement::SchurComplMult(Mat mat, Vec x, Vec y)
     PetscCall(VecNorm(x, NORM_2, &norm_x));
     PetscCall(VecNorm(y, NORM_2, &norm_y));
 
-    PetscPrintf(MPI_COMM_WORLD, "||x|| = %g, ||S*x|| = %g, ||A00^{-1} A01 x|| = %g\n",
-                norm_x, norm_y, norm_schur);
+    //PetscPrintf(MPI_COMM_WORLD, "||x|| = %g, ||S*x|| = %g, ||A00^{-1} A01 x|| = %g\n",
+    //            norm_x, norm_y, norm_schur);
 
     // Destroy the vectors
     /*PetscCall(VecDestroy(&a11xp));
