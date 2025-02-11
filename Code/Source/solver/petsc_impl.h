@@ -225,12 +225,15 @@ class BlockNestedPreconditioner
     // create the block matrices
     PetscErrorCode BlockNestedPC_SetMatrix( Mat A );
 
+    PetscErrorCode SetApproximateSchur(Mat **A);
+
   private:
   
     //Mat tangent_matrix;                  /* Full tangent matrix */
     Mat **A_mn;                            /* Block matrices */
     Vec *r_m;
     Vec *z_m;
+    Mat Ps;                               /* Approximate Schur complement matrix */
     //Vec z_0, z_1;                       /* Block Solution/temporary vectors */
     //IS row_velocity_is, row_pressure_is;  /* Index sets for row splitting */
     //IS col_velocity_is, col_pressure_is;  /* Index sets for column splitting */

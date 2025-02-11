@@ -1954,6 +1954,8 @@ BlockNestedPreconditioner::~BlockNestedPreconditioner()
         PetscFree(z_m);
     }
 
+    MatDestroy(&Ps);
+
     // Clean up index sets
     //ISDestroy(&row_velocity_is);
     //ISDestroy(&row_pressure_is);
@@ -2119,9 +2121,49 @@ PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec 
     //PetscCall(PCSetType(pc_0, PCJACOBI));
     //PCHYPRESetType(pc_0, "boomeramg");
     //solver_0->SetOperator(A_mn[0][0]);
+    // PC pc_0;
+    // solver_1->GetPC(&pc_0);
+    // PetscCall(PCSetType(pc_0, PCHYPRE));
+    // PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
+
+    // // Set HYPRE BoomerAMG options
+    // PetscCall(PCSetFromOptions(pc_0)); // Ensure options are taken from command line
+
+    // // Set cycle type: V-cycle (1)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1"));
+
+    // // Set coarsening method: HMIS (8)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8"));
+
+    // // Set interpolation method: Extended ext+i (6)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6"));
+
+    // // Set smoother: Hybrid Gauss-Seidel (hybrid = 3)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3"));
+
+    // // Set truncation factor for interpolation
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3"));
+
+    // // Set threshold for strong connections
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5"));
+
+    // // Set max number of elements per row for interpolation
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5"));
+
+    // // Set number of levels for aggressive coarsening
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2"));
+
     std::cout << "FIRST SOLVER 0" << std::endl;
     //solver_0->Monitor();
     solver_0->Solve(r_m[0], z_m[0], PETSC_FALSE);
+
+    //====================== CONDITION NUMBER =======================
+    PetscReal sigma_max, sigma_min, cond_num;
+    KSPComputeExtremeSingularValues(solver_0->ksp, &sigma_max, &sigma_min);
+    cond_num = sigma_max / sigma_min;
+    std::cout << "Estimated condition number Schur matrix free: %g\n" << (double)cond_num << std::endl;
+    //====================== END CONDITION NUMBER =======================
+
     ierr = VecAssemblyBegin(z_m[0]); 
     if (ierr) { std::cout << "Error in VecAssemblyBegin z_m[0]: " << ierr << std::endl;}
     ierr = VecAssemblyEnd(z_m[0]);
@@ -2143,24 +2185,53 @@ PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec 
     // of S to a vector x = r_1 - A_10 * z_0 and using
     // GMRES solver to solve for z_1
     //-------------------------------------------------
-    /*PC pc_1;
-    solver_1->GetPC(&pc_1);
-    PetscCall(PCSetType(pc_1, PCHYPRE));
-    PCHYPRESetType(pc_1, "boomeramg");*/
+    // PC pc_1;
+    // solver_1->GetPC(&pc_1);
+    // PetscCall(PCSetType(pc_1, PCHYPRE));
+    // PetscCall(PCHYPRESetType(pc_1, "boomeramg"));
+
+    // // Set HYPRE BoomerAMG options
+    // PetscCall(PCSetFromOptions(pc_1)); // Ensure options are taken from command line
+
+    // // Set cycle type: V-cycle (1)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1"));
+
+    // // Set coarsening method: HMIS (8)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8"));
+
+    // // Set interpolation method: Extended ext+i (6)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6"));
+
+    // // Set smoother: Hybrid Gauss-Seidel (hybrid = 3)
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3"));
+
+    // // Set truncation factor for interpolation
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3"));
+
+    // // Set threshold for strong connections
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5"));
+
+    // // Set max number of elements per row for interpolation
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5"));
+
+    // // Set number of levels for aggressive coarsening
+    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2"));
+
 
     // Create the MatrixFreeSchurComplement object
     MatrixFreeSchurComplement *SchurCompl = new MatrixFreeSchurComplement(A_mn, solver_0);
     // Apply the Schur complement
     SchurCompl->ApplySchurComplement();
     // Set the operator for solver_1 to the Schur complement matrix
-    solver_1->SetOperator(SchurCompl->GetSchurMatrix());
+    solver_1->SetOperator(SchurCompl->GetSchurMatrix(), Ps);
+
     // Solve the system using matrix-free GMRES solver
     //solver_1->Monitor();
     ierr = solver_1->Solve(z_m[1], z_m[1], PETSC_TRUE);
     if (ierr) { std::cout << "Error in solver_1->Solve: " << ierr << std::endl;}
 
     //====================== CONDITION NUMBER =======================
-    PetscReal sigma_max, sigma_min, cond_num;
+    //PetscReal sigma_max, sigma_min, cond_num;
     KSPComputeExtremeSingularValues(solver_1->ksp, &sigma_max, &sigma_min);
     cond_num = sigma_max / sigma_min;
     std::cout << "Estimated condition number Schur matrix free: %g\n" << (double)cond_num << std::endl;
@@ -2245,72 +2316,49 @@ PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec 
 PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_SetMatrix(Mat A)
 {
     PetscErrorCode ierr;
-    /* Create subvector data structures */
-    //PetscCall(PetscMalloc1(nblock, &r_m));
-
-    /* Create submatrix data structures */
-    //PetscCall(PetscMalloc1(nblock * nblock, &A_mn));
-    /*if (A_00 == NULL)
-    {
-        // Extract submatrices for the first time
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_velocity_is, col_velocity_is, MAT_INITIAL_MATRIX, &A_00));
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_velocity_is, col_pressure_is, MAT_INITIAL_MATRIX, &A_01));
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_pressure_is, col_velocity_is, MAT_INITIAL_MATRIX, &A_10));
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_pressure_is, col_pressure_is, MAT_INITIAL_MATRIX, &A_11));
-
-        // Fix the diagonl structure of the matrix
-        PetscCall(MatSetOption(A_00, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-        PetscCall(MatSetOption(A_01, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-        PetscCall(MatSetOption(A_10, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-        PetscCall(MatSetOption(A_11, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-
-        //============== DEBUG =================
-        PetscInt rows, cols;
-        const char *mattype;
-
-        MatGetSize(A_00, &rows, &cols);
-        PetscCall(MatGetType(A_00, &mattype));
-        //PetscPrintf(MPI_COMM_WORLD, "A_00 size: %d x %d, type: %s\n", rows, cols, mattype);
-        //PetscCall(MatView(A_00, PETSC_VIEWER_STDOUT_WORLD));
-
-        MatGetSize(A_01, &rows, &cols);
-        PetscCall(MatGetType(A_01, &mattype));
-        //PetscPrintf(MPI_COMM_WORLD, "A_01 size: %d x %d, type: %s\n", rows, cols, mattype);
-        //PetscCall(MatView(A_01, PETSC_VIEWER_STDOUT_WORLD));
-
-        MatGetSize(A_10, &rows, &cols);
-        PetscCall(MatGetType(A_10, &mattype));
-        //PetscPrintf(MPI_COMM_WORLD, "A_10 size: %d x %d, type: %s\n", rows, cols, mattype);
-        //PetscCall(MatView(A_10, PETSC_VIEWER_STDOUT_WORLD));
-
-        MatGetSize(A_11, &rows, &cols);
-        PetscCall(MatGetType(A_11, &mattype));
-        //PetscPrintf(MPI_COMM_WORLD, "A_11 size: %d x %d, type: %s\n", rows, cols, mattype);
-        //PetscCall(MatView(A_11, PETSC_VIEWER_STDOUT_WORLD));
-        //============== END DEBUG =================
-    }
-    else
-    {
-        // Reuse existing submatrices by updating their values
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_velocity_is, col_velocity_is, MAT_REUSE_MATRIX, &A_00));
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_velocity_is, col_pressure_is, MAT_REUSE_MATRIX, &A_01));
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_pressure_is, col_velocity_is, MAT_REUSE_MATRIX, &A_10));
-        PetscCall(MatCreateSubMatrix(tangent_matrix, row_pressure_is, col_pressure_is, MAT_REUSE_MATRIX, &A_11));
-
-        // Fix the diagonl structure of the matrix
-        PetscCall(MatSetOption(A_00, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-        PetscCall(MatSetOption(A_01, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-        PetscCall(MatSetOption(A_10, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-        PetscCall(MatSetOption(A_11, MAT_NEW_NONZERO_LOCATIONS, PETSC_FALSE));
-    }*/
-
+    
     ierr = MatNestGetSubMats(A, NULL, NULL, &A_mn);
     if (ierr) { std::cout << "Error in MatNestGetSubMats: " << ierr << std::endl;}
+
+    // Setting the approximate Schur complement matrix
+    SetApproximateSchur(A_mn);
 
     solver_0->SetOperator(A_mn[0][0]);
 
     return PETSC_SUCCESS;
 };
+
+PetscErrorCode BlockNestedPreconditioner::SetApproximateSchur(Mat **A)
+{
+    Vec diagA, invDiagA;
+    Mat BinvDiagA, CBinvDiagA;
+
+    // Extract the diagonal of A
+    MatCreateVecs(A[0][0], &diagA, NULL);
+    MatGetDiagonal(A[0][0], diagA);
+
+    // Compute inverse of the diagonal 
+    VecDuplicate(diagA, &invDiagA);
+    VecReciprocal(diagA);
+
+    // Compute BinvDiagA = B * invDiagA (Diagonal scaling)
+    MatDuplicate(A[0][1], MAT_COPY_VALUES, &BinvDiagA);
+    MatDiagonalScale(BinvDiagA, invDiagA, NULL);
+
+    // Compute CBinvDiagA = C * BinvDiagA
+    MatMatMult(A[1][0], BinvDiagA, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &CBinvDiagA);
+
+    // Compute Schur complement approximation Ps = D - CBinvDiagA
+    MatDuplicate(A[1][1], MAT_COPY_VALUES, &Ps);
+    MatAXPY(Ps, -1.0, CBinvDiagA, DIFFERENT_NONZERO_PATTERN); 
+
+    // Cleanup
+    VecDestroy(&diagA);
+    VecDestroy(&invDiagA);
+    MatDestroy(&BinvDiagA);
+    MatDestroy(&CBinvDiagA);
+}
+
 //-------------------------------------------------------------------------
 // Internal Linear solver for the Block Nested Preconditioner:
 // solver_0, solver_1
@@ -2524,13 +2572,6 @@ PetscErrorCode MatrixFreeSchurComplement::SchurComplMult(Mat mat, Vec x, Vec y)
 
     // A00^{-1} * (A01 * x)
     ctx->ASolver->Solve(ctx->v_0, ctx->v_0, PETSC_FALSE);
-
-    //====================== CONDITION NUMBER =======================
-    PetscReal sigma_max, sigma_min, cond_num;
-    KSPComputeExtremeSingularValues(ctx->ASolver->ksp, &sigma_max, &sigma_min);
-    cond_num = sigma_max / sigma_min;
-    std::cout << "Estimated condition number Inner Solver: %g\n" << (double)cond_num << std::endl;
-    //====================== END CONDITION NUMBER =======================
 
     PetscCall(VecNorm(ctx->v_0, NORM_2, &norm_schur));
     // (A10 * A00^{-1} * A01) * x
