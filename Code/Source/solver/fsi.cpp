@@ -332,8 +332,10 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const Ar
     {
       ustruct::ustruct_do_assem(com_mod, eNoN, ptr, lKd, lK, lR);
     }
-
-    eq.linear_algebra->assemble(com_mod, eNoN, ptr, lK, lR);
+    else 
+    {
+      eq.linear_algebra->assemble(com_mod, eNoN, ptr, lK, lR);
+    }
 
   } // e: loop
 
