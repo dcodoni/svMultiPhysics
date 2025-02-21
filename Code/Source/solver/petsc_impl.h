@@ -73,30 +73,33 @@ typedef struct {
     PetscInt *lpBC_l;   /* O2 index for dofs with lumped parameter BC */
     PetscInt *lpBC_g;   /* PETSc index for dofs with lumped parameter BC */
 
-    PetscInt  lpPts_0;
-    PetscInt  lpPts_1;
-    PetscInt *lpBC_l_0;   /* O2 index for dofs with lumped parameter BC */
-    PetscInt *lpBC_g_0;   /* PETSc index for dofs with lumped parameter BC */
-    PetscInt *lpBC_l_1;   /* O2 index for dofs with lumped parameter BC */
-    PetscInt *lpBC_g_1;   /* PETSc index for dofs with lumped parameter BC */
-
     PetscInt  DirPts;   /* number of dofs with Dirichlet BC */
     PetscInt *DirBC;    /* PETSc index for dofs with Dirichlet BC */
 
-    PetscInt  DirPts_0;   /* number of dofs with Dirichlet BC */
-    PetscInt *DirBC_0;    /* PETSc index for dofs with Dirichlet BC */
-    PetscReal *svFSI_DirBC_0;    /* svFSI Dirichlet BC */
-    PetscInt  DirPts_1;   /* number of dofs with Dirichlet BC */
-    PetscInt *DirBC_1;    /* PETSc index for dofs with Dirichlet BC */
-    PetscReal *svFSI_DirBC_1;    /* svFSI Dirichlet BC */
+    /* _0 refer to velocity dofs when block iterative procedure is used 
+       _1 refer to pressure dof when block iterative procedure is used 
+    */
+    PetscInt  lpPts_0;
+    PetscInt *lpBC_l_0;
+    PetscInt *lpBC_g_0;
+    PetscInt  lpPts_1;
+    PetscInt *lpBC_l_1;
+    PetscInt *lpBC_g_1;
+
+    PetscInt  DirPts_0;   
+    PetscInt *DirBC_0;    
+    PetscReal *svFSI_DirBC_0;    /* svFSI Dirichlet BC for the velocity dofs */
+    PetscInt  DirPts_1;   
+    PetscInt *DirBC_1;    
+    PetscReal *svFSI_DirBC_1;    /* svFSI Dirichlet BC for the pressure dof */
 
     Vec       b;        /* rhs/solution vector of owned vertices */
-    Vec       b_n[2];   /* block vectors */
+    Vec       b_n[2];   /* rhs/solution subvectors of owned vertices */
     Mat       A;        /* stiffness matrix */
-    Mat       A_mn[4];  /* block matrices */
+    Mat       A_mn[4];  /* stiffness submatrices */
     KSP       ksp;      /* linear solver context */
 
-    PetscBool bnpc;     /* whether block nested preconditioner is activated */
+    PetscBool bnpc;     /* whether a block iterative preconditioner is used */
     PetscBool rcs;      /* whether rcs preconditioner is activated */
     Vec       Dr;       /* diagonal matrix from row maxabs */
     Vec       Dc;       /* diagonal matrix from col maxabs */
@@ -187,76 +190,11 @@ a matrix-free algorithm.
 */
 // --------------------------------------------------------------
 
-// forward declaration
-class BlockNestedPC_InternalLinearSolver;
-
-typedef struct 
-{    
-    Mat A00, A01, A10, A11;                        // Matrices involved in the operation
-    Vec v_0, v_1, v_1_tmp;                         // Temporary vectors
-    BlockNestedPC_InternalLinearSolver *ASolver;   // Solver object for internal operations
-} ShellMatrixContext;
-
-class BlockNestedPreconditioner
-{
-  public:
-    // --------------------------------------------------------------
-    // Input the relative tolerance for the _0 solver and the _1 solver
-    // _0 is associated with the A_00 matrix
-    // _1 is associated with the Schur complement (matrix-free algorithm).
-    // --------------------------------------------------------------
-    BlockNestedPreconditioner( const PetscReal rtol0, 
-        const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
-        const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
-        const PetscInt maxit1);
-
-    // Destructor
-    ~BlockNestedPreconditioner();
-
-    // Initialize the index sets
-    /* 
-    PetscErrorCode Initialize( const PetscInt dof, const PetscInt nnz);
-    */
-    // Application function for the block nested preconditioner to be used 
-    // by the FGMRES solver
-    PetscErrorCode BlockNestedPC_Apply(PC pc, Vec r, Vec z);
-
-    // Set the tangent matrix for the block nested preconditioner and 
-    // create the block matrices
-    PetscErrorCode BlockNestedPC_SetMatrix( Mat A );
-
-    PetscErrorCode SetApproximateSchur(Mat **A);
-
-  private:
-  
-    //Mat tangent_matrix;                  /* Full tangent matrix */
-    Mat **A_mn;                            /* Block matrices */
-    Vec *r_m;
-    Vec *z_m;
-    Mat Ps;                               /* Approximate Schur complement matrix */
-    //Vec z_0, z_1;                       /* Block Solution/temporary vectors */
-    //IS row_velocity_is, row_pressure_is;  /* Index sets for row splitting */
-    //IS col_velocity_is, col_pressure_is;  /* Index sets for column splitting */
-    PetscInt local_size_v, local_size_p ; /* Size of the index sets */
-
-    BlockNestedPC_InternalLinearSolver * solver_0; /* matrix-free solver for Schur complement */
-
-    BlockNestedPC_InternalLinearSolver * solver_1; /* explicit solver for A00 */
-};
-
 class BlockNestedPC_InternalLinearSolver 
 {
   public:
     KSP ksp;
 
-    // Default KSP object: rtol = 1.0e-5, atol = 1.0e-50, dtol = 1.0e50
-    // maxits = 10000, and the user may reset the parameters by options
-    BlockNestedPC_InternalLinearSolver();
-    
-    // Construct KSP with input tolerances and maximum iteration
-    BlockNestedPC_InternalLinearSolver( const double &input_rtol, const double &input_atol, 
-        const double &input_dtol, const int &input_maxits );
-    
     // Construct KSP with input tolerances and maximum iteration with prefix
     BlockNestedPC_InternalLinearSolver( const double &in_rtol, const double &in_atol,
         const double &in_dtol, const int &in_maxits,
@@ -265,27 +203,16 @@ class BlockNestedPC_InternalLinearSolver
     // Destructor 
     ~BlockNestedPC_InternalLinearSolver();
 
-    // Assign a matrix K to the linear solver object and a matrix P for 
+    // Assign a matrix A to the linear solver object and a matrix P for 
     // the preconditioner if different from K
     PetscErrorCode SetOperator(const Mat &A) {PetscCall(KSPSetOperators(ksp, A, A));}
-
     PetscErrorCode SetOperator(const Mat &A, const Mat &P) {PetscCall(KSPSetOperators(ksp, A, P));}
 
     // Solve a linear problem A x = b
-    // with x plain vector, with no ghost entries.
     PetscErrorCode Solve( const Vec &G, Vec &out_sol, const bool &isPrint=true );
 
-    PetscErrorCode Solve( const Mat &K, const Vec &G, Vec &out_sol, 
-        const bool &isPrint=true );
-
-    // Link the solver to a preconditioner context
+    // Get the preconditioner context from the solver ksp
     PetscErrorCode GetPC( PC *prec ) const {PetscCall(KSPGetPC(ksp, prec));}
-
-    // Set the Schur Complement object
-    //void SetSchurComplement(MatrixFreeSchurComplement *Schur) { SchurComplement = Schur; }
-    
-    // Get matrix 
-    //Mat GetSchur() const {return SchurComplement->GetMatrix();}
 
     // Get the iteration number
     int get_ksp_it_num() const
@@ -311,20 +238,63 @@ class BlockNestedPC_InternalLinearSolver
     void Monitor() const;
 
   private: 
-    // Application of Schur complement to a vector for matrix-free algorithm
-    // MatrixFreeSchurComplement * SchurComplement;
-
     // relative, absolute, divergence tolerance
     const PetscReal rtol, atol, dtol;
-    
     // maximum number of iterations 
     const PetscInt maxits;
+};
+
+
+typedef struct 
+{    
+    Mat A00, A01, A10, A11;                        // Matrices involved in the operation
+    Vec v_0, v_1, v_1_tmp;                         // Temporary vectors
+    BlockNestedPC_InternalLinearSolver *ASolver;   // Solver object for internal operations
+    
+} ShellMatrixContext;
+
+class BlockNestedPreconditioner
+{
+  public:
+    // --------------------------------------------------------------
+    // Input the relative tolerance for the _0 and the _1 linear solvers
+    // _0 is associated with the A_00 matrix
+    // _1 is associated with the Schur complement (matrix-free algorithm).
+    // --------------------------------------------------------------
+    BlockNestedPreconditioner( const PetscReal rtol0, 
+        const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
+        const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+        const PetscInt maxit1);
+
+    // Destructor
+    ~BlockNestedPreconditioner();
+
+    // Application function for the block nested preconditioner to be used 
+    // by the FGMRES solver
+    PetscErrorCode BlockNestedPC_Apply(PC pc, Vec r, Vec z);
+
+    // Set the stifness matrix to be split into submatrices
+    PetscErrorCode BlockNestedPC_SetMatrix( Mat A );
+
+    PetscErrorCode SetApproximateSchur(Mat **A);
+
+  private:
+  
+    Mat **subA;                           /* submatrices */
+    Vec *subR;                            /* subvectors for the residual */     
+    Vec *subZ;                            /* subvectors for the Krylov member of FGMRES */
+    Mat Ps;                               /* Approximate Schur complement matrix */
+    PetscInt local_size_v, local_size_p ; /* Size of the index sets */
+
+    BlockNestedPC_InternalLinearSolver * solver_0; /* explicit solver for A00 */
+
+    BlockNestedPC_InternalLinearSolver * solver_1; /* matrix-free solver for Schur complement */
 };
 
 class MatrixFreeSchurComplement 
 {
   public:
-    // Constructor: initialized the matshell context 
+    // Constructor: initialize the matshell context 
     MatrixFreeSchurComplement(Mat **K, BlockNestedPC_InternalLinearSolver* solver_0);
 
     // Destructor
@@ -340,9 +310,6 @@ class MatrixFreeSchurComplement
 
   private:
     Mat S;
-    // Method defining the Schur complement matrix-free procedure
-    //PetscErrorCode SchurComplMult(Mat mat, Vec x, Vec y);
-
     // Context for the shell matrix
     ShellMatrixContext *MatShellCtx; 
 };

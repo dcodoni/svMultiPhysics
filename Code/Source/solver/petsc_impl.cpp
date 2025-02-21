@@ -234,8 +234,7 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
     {
     case PreconditionerType::PREC_PETSC_JACOBI:
         PCSetType(pc, PCJACOBI);
-        //PCSetType(pc, PCFIELDSPLIT);
-        break;
+    break;
 
     case PreconditionerType::PREC_PETSC_NESTEDBLOCK: // To be used with FGMRES solver
     {
@@ -281,14 +280,14 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
                                     "precondition the linear system with RCS first.\n"
                                     "WARNING <PETSC_CREATE_LINEARSOLVER>: "
                                     "This will NOT be overwritten by petsc_option.inp!\n");
-        break;
+    break;
 
     default:
         PetscPrintf(MPI_COMM_WORLD, "ERROR <PETSC_CREATE_LINEARSOLVER>: "
                                     "preconditioner type not supported through svFSI input file.\n"
                                     "ERROR <PETSC_CREATE_LINEARSOLVER>: "
                                     "More preconditioner options can be set through petsc_option.inp.\n");
-        break;
+    break;
     
     }
 
@@ -377,8 +376,7 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
     PetscMalloc1(na, &a);
     PetscTime(&ts);
 
-    ierr = KSPSetOperators(psol[cEq].ksp, psol[cEq].A, psol[cEq].A);
-    if (ierr) { std::cout << "KSPOperator Error" << ierr << std::endl;}
+    KSPSetOperators(psol[cEq].ksp, psol[cEq].A, psol[cEq].A);
 
     // Update the PCSHELL context with the tangent matrix
     if (psol[cEq].bnpc)
@@ -386,12 +384,9 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
         Mat Amat;
         PC pc;
         BlockNestedPreconditioner *ctx;
-        ierr = KSPGetPC(psol[cEq].ksp, &pc);
-        if (ierr) { std::cout << "KSPGetPC Error" << ierr << std::endl;}
-        ierr = PCShellGetContext(pc, &ctx);
-        if (ierr) { std::cout << "PCShellGetContext Error" << ierr << std::endl;}
-        ierr = KSPGetOperators(psol[cEq].ksp, &Amat, NULL);
-        if (ierr) { std::cout << "KSPGetOperators Error" << ierr << std::endl;}
+        KSPGetPC(psol[cEq].ksp, &pc);
+        PCShellGetContext(pc, &ctx);
+        KSPGetOperators(psol[cEq].ksp, &Amat, NULL);
         ctx->BlockNestedPC_SetMatrix(Amat);
     }
 
@@ -407,16 +402,8 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
         KSPSetResidualHistory(psol[cEq].ksp, a, na, PETSC_TRUE);
     }
 
-    /* DAVID: Profiling and debugging */
-    PetscViewerAndFormat *vf;
-    PetscViewerAndFormatCreate(PETSC_VIEWER_STDOUT_WORLD, PETSC_VIEWER_DEFAULT, &vf);
-    KSPMonitorSet(psol[cEq].ksp, (PetscErrorCode(*)(KSP, PetscInt, PetscReal, void *))KSPMonitorDefault, vf, (PetscErrorCode(*)(void **))PetscViewerAndFormatDestroy);
-
-    ierr = KSPSetUp(psol[cEq].ksp);
-    if (ierr) { std::cout << "KSPSetUp Error" << ierr << std::endl;}
-
-    ierr = KSPSolve(psol[cEq].ksp, psol[cEq].b, psol[cEq].b);
-    if (ierr) { std::cout << "KSPSolve Error" << ierr << std::endl;}
+    KSPSetUp(psol[cEq].ksp);
+    KSPSolve(psol[cEq].ksp, psol[cEq].b, psol[cEq].b);
 
     /* Rescale solution for RCS preconditioner */
     if (psol[cEq].rcs)
@@ -425,6 +412,7 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
     }
 
     /* Fill the ghost vertices with correct values. */
+
     Vec *svec; // It is used to point to the nested vector subvectors.
     if (psol[cEq].bnpc)
     {
@@ -1000,7 +988,6 @@ PetscErrorCode petsc_create_vecmat(const PetscInt dof, const PetscInt cEq, const
 PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, const PetscInt nEq)
 {
     PetscInt i, ii, j, jj, is, ie, row, col, nghost;
-    PetscInt nblock = 2;
     Mat preallocator_00, preallocator_01, preallocator_10, preallocator_11;
     PetscScalar value;
     PC pc;
@@ -1025,58 +1012,24 @@ PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, 
         plhs.ghostltg_1[i] = plhs.ghostltg[i];
     } 
 
-    /* Create vector data structures 
-    ierr = VecCreateMPI(MPI_COMM_WORLD, plhs.mynNo * (dof-1), PETSC_DETERMINE, &psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecCreateMPI 0: " << ierr << std::endl;}
-    ierr = VecCreateMPI(MPI_COMM_WORLD, plhs.mynNo, PETSC_DETERMINE, &psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecCreateMPI 1: " << ierr << std::endl;}
-    ierr = VecSetFromOptions(psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecSetFromOptions: " << ierr << std::endl;}
-    ierr = VecSetFromOptions(psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecSetFromOptions: " << ierr << std::endl;}
-    */
-
     // Allocate the sub-vectors
-    ierr = VecCreateGhost(MPI_COMM_WORLD, plhs.mynNo * (dof-1), PETSC_DETERMINE, nghost * (dof-1) , plhs.ghostltg_0, &psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecCreateGhost 0: " << ierr << std::endl;}
-    ierr = VecCreateGhost(MPI_COMM_WORLD, plhs.mynNo, PETSC_DETERMINE, nghost, plhs.ghostltg_1, &psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecCreateGhost 1: " << ierr << std::endl;}
-    ierr = VecSetFromOptions(psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecSetFromOptions: " << ierr << std::endl;}
-    ierr = VecSetFromOptions(psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecSetFromOptions: " << ierr << std::endl;}
-
-    // Setup nest vector
-    //ierr = VecCreateNest(MPI_COMM_WORLD, 2, NULL, bSplit, &psol[cEq].b);
-    //if (ierr) { std::cout << "Error in VecCreateNest: " << ierr << std::endl;}
-    
-    /*if (nEq > 1)
-        ierr = VecSetOptionsPrefix(psol[cEq].b, psol[cEq].pre);
-        if (ierr) { std::cout << "Error in VecSetOptionsPrefix: " << ierr << std::endl;}
-    ierr = VecSetFromOptions(psol[cEq].b);
-    if (ierr) { std::cout << "Error in VecSetFromOptions (b): " << ierr << std::endl;} */
+    PetscCall(VecCreateGhost(MPI_COMM_WORLD, plhs.mynNo * (dof-1), PETSC_DETERMINE, nghost * (dof-1) , plhs.ghostltg_0, &psol[cEq].b_n[0]));
+    PetscCall(VecCreateGhost(MPI_COMM_WORLD, plhs.mynNo, PETSC_DETERMINE, nghost, plhs.ghostltg_1, &psol[cEq].b_n[1]));
+    PetscCall(VecSetFromOptions(psol[cEq].b_n[0]));
+    PetscCall(VecSetFromOptions(psol[cEq].b_n[1]));
 
     /*
-        Preallocate psol.A with the help of MATPREALLOCATOR.
+        Preallocate psol.A_mn[] with the help of MATPREALLOCATOR.
         We preallocate 4 submatrices: 
         [ A_00  A_01 ]
         [ A_10  A_11 ]
     */
-    // preallocator_00
-    ierr = MatCreatePreallocator(plhs.mynNo * (dof-1), plhs.mynNo * (dof-1), &preallocator_00);
-    if (ierr) { std::cout << "MatCreatePreallocator 00: " << ierr << std::endl;}
-    // preallocator_01
-    ierr = MatCreatePreallocator(plhs.mynNo * (dof-1), plhs.mynNo, &preallocator_01);
-    if (ierr) { std::cout << "MatCreatePreallocator 01: " << ierr << std::endl;}
-    // preallocator_10
-    ierr = MatCreatePreallocator(plhs.mynNo, plhs.mynNo * (dof-1), &preallocator_10);
-    if (ierr) { std::cout << "MatCreatePreallocator 10: " << ierr << std::endl;}
-    // preallocator_11
-    ierr = MatCreatePreallocator(plhs.mynNo, plhs.mynNo, &preallocator_11);
-    if (ierr) { std::cout << "MatCreatePreallocator 11: " << ierr << std::endl;}
+    MatCreatePreallocator(plhs.mynNo * (dof-1), plhs.mynNo * (dof-1), &preallocator_00);
+    MatCreatePreallocator(plhs.mynNo * (dof-1), plhs.mynNo, &preallocator_01);
+    MatCreatePreallocator(plhs.mynNo, plhs.mynNo * (dof-1), &preallocator_10);
+    MatCreatePreallocator(plhs.mynNo, plhs.mynNo, &preallocator_11);
 
     value = 0.0;
-    /* Preallocator_ submatrices structure */
     for (i = 0; i < plhs.nNo; i++)
     {
         is = plhs.rowPtr[i * 2];
@@ -1091,23 +1044,20 @@ PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, 
                 for (int l = 0; l < dof-1; l++)
                 {
                     col = jj * (dof - 1) + l;
-                    ierr = MatSetValue(preallocator_00, row, col, value, INSERT_VALUES);
-                    if (ierr) { std::cout << "Error in MatSetValue preallocator 00: " << ierr << std::endl;}
+                    PetscCall(MatSetValue(preallocator_00, row, col, value, INSERT_VALUES));
                 }
                 col = jj;
-                ierr = MatSetValue(preallocator_01, row, col, value, INSERT_VALUES);
-                if (ierr) { std::cout << "Error in MatSetValue preallocator 01: " << ierr << std::endl;}
+                PetscCall(MatSetValue(preallocator_01, row, col, value, INSERT_VALUES));
             }
             row = ii;
             for (int k = 0; k < dof-1; k++)
             {
                 col = jj * (dof - 1) + k;
-                ierr = MatSetValue(preallocator_10, row, col, value, INSERT_VALUES);
-                if (ierr) { std::cout << "Error in MatSetValue preallocator 10: " << ierr << std::endl;}
+                PetscCall(MatSetValue(preallocator_10, row, col, value, INSERT_VALUES));
+                
             }
             col = jj;
-            ierr = MatSetValue(preallocator_11, row, col, value, INSERT_VALUES);
-            if (ierr) { std::cout << "Error in MatSetValue preallocator 11: " << ierr << std::endl;}
+            PetscCall(MatSetValue(preallocator_11, row, col, value, INSERT_VALUES));
         }
     }
 
@@ -1118,14 +1068,12 @@ PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, 
         for (j = 0; j < psol[cEq].lpPts_0; j++)
         {
             col = psol[cEq].lpBC_g_0[j];
-            ierr = MatSetValue(preallocator_00, row, col, 0.0, INSERT_VALUES);
-            if (ierr) { std::cout << "Error in MatSetValue preallocator 00 BC: " << ierr << std::endl;}
+            PetscCall(MatSetValue(preallocator_00, row, col, 0.0, INSERT_VALUES));
         }
         for (j = 0; j < psol[cEq].lpPts_1; j++)
         {
             col = psol[cEq].lpBC_g_1[j];
-            ierr = MatSetValue(preallocator_01, row, col, 0.0, INSERT_VALUES);
-            if (ierr) { std::cout << "Error in MatSetValue preallocator 01 BC: " << ierr << std::endl;}
+            PetscCall(MatSetValue(preallocator_01, row, col, 0.0, INSERT_VALUES));
         }
     }
     for (i = 0; i < psol[cEq].lpPts_1; i++)
@@ -1134,48 +1082,30 @@ PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, 
         for (j = 0; j < psol[cEq].lpPts_0; j++)
         {
             col = psol[cEq].lpBC_g_0[j];
-            ierr = MatSetValue(preallocator_10, row, col, 0.0, INSERT_VALUES);
-            if (ierr) { std::cout << "Error in MatSetValue preallocator 10 BC: " << ierr << std::endl;}
+            PetscCall(MatSetValue(preallocator_10, row, col, 0.0, INSERT_VALUES));
         }
         for (j = 0; j < psol[cEq].lpPts_1; j++)
         {
             col = psol[cEq].lpBC_g_1[j];
-            ierr = MatSetValue(preallocator_11, row, col, 0.0, INSERT_VALUES);
-            if (ierr) { std::cout << "Error in MatSetValue preallocator 11 BC: " << ierr << std::endl;}
+            PetscCall(MatSetValue(preallocator_11, row, col, 0.0, INSERT_VALUES));
         }
     }
 
-    ierr = MatAssemblyBegin(preallocator_00, MAT_FINAL_ASSEMBLY); 
-    if (ierr) { std::cout << "Error in MatAssemblyBegin 00: " << ierr << std::endl;}
-    ierr = MatAssemblyEnd(preallocator_00, MAT_FINAL_ASSEMBLY);
-    if (ierr) { std::cout << "Error in MatAssemblyEnd 00: " << ierr << std::endl;}
-    ierr = MatAssemblyBegin(preallocator_01, MAT_FINAL_ASSEMBLY); 
-    if (ierr) { std::cout << "Error in MatAssemblyBegin 01: " << ierr << std::endl;}
-    ierr = MatAssemblyEnd(preallocator_01, MAT_FINAL_ASSEMBLY);
-    if (ierr) { std::cout << "Error in MatAssemblyEnd 01: " << ierr << std::endl;}
-    ierr = MatAssemblyBegin(preallocator_10, MAT_FINAL_ASSEMBLY); 
-    if (ierr) { std::cout << "Error in MatAssemblyBegin 10: " << ierr << std::endl;}
-    ierr = MatAssemblyEnd(preallocator_10, MAT_FINAL_ASSEMBLY);
-    if (ierr) { std::cout << "Error in MatAssemblyEnd 10: " << ierr << std::endl;}
-    ierr = MatAssemblyBegin(preallocator_11, MAT_FINAL_ASSEMBLY); 
-    if (ierr) { std::cout << "Error in MatAssemblyBegin 11: " << ierr << std::endl;}
-    ierr = MatAssemblyEnd(preallocator_11, MAT_FINAL_ASSEMBLY);
-    if (ierr) { std::cout << "Error in MatAssemblyEnd 11: " << ierr << std::endl;}
+    PetscCall(MatAssemblyBegin(preallocator_00, MAT_FINAL_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(preallocator_00, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(preallocator_01, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(preallocator_01, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(preallocator_10, MAT_FINAL_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(preallocator_10, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(preallocator_11, MAT_FINAL_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(preallocator_11, MAT_FINAL_ASSEMBLY));
 
-    // Create and preallocate submatrices structure 
-    // A_00
-    ierr = MatCreatePreallocSubMat(plhs.mynNo * (dof - 1), plhs.mynNo * (dof - 1), &psol[cEq].A_mn[0], &preallocator_00);
-    if (ierr) { std::cout << "Error in MatCreatePreallocSubMat 00: " << ierr << std::endl;}
-    // A_01
-    ierr = MatCreatePreallocSubMat(plhs.mynNo * (dof - 1), plhs.mynNo, &psol[cEq].A_mn[1], &preallocator_01);
-    if (ierr) { std::cout << "Error in MatCreatePreallocSubMat 01: " << ierr << std::endl;}
-    // A_10
-    ierr = MatCreatePreallocSubMat(plhs.mynNo, plhs.mynNo * (dof - 1), &psol[cEq].A_mn[2], &preallocator_10);
-    if (ierr) { std::cout << "Error in MatCreatePreallocSubMat 10: " << ierr << std::endl;}
-    // A_11
-    ierr = MatCreatePreallocSubMat(plhs.mynNo, plhs.mynNo, &psol[cEq].A_mn[3], &preallocator_11);
-    if (ierr) { std::cout << "Error in MatCreatePreallocSubMat 11: " << ierr << std::endl;}
-
+    MatCreatePreallocSubMat(plhs.mynNo * (dof - 1), plhs.mynNo * (dof - 1), &psol[cEq].A_mn[0], &preallocator_00);
+    MatCreatePreallocSubMat(plhs.mynNo * (dof - 1), plhs.mynNo, &psol[cEq].A_mn[1], &preallocator_01);
+    MatCreatePreallocSubMat(plhs.mynNo, plhs.mynNo * (dof - 1), &psol[cEq].A_mn[2], &preallocator_10);
+    MatCreatePreallocSubMat(plhs.mynNo, plhs.mynNo, &psol[cEq].A_mn[3], &preallocator_11);
+    
+    // Clean up
     PetscCall(MatDestroy(&preallocator_00)); 
     PetscCall(MatDestroy(&preallocator_01)); 
     PetscCall(MatDestroy(&preallocator_10)); 
@@ -1217,7 +1147,7 @@ PetscErrorCode petsc_set_vec(const PetscInt dof, const PetscInt cEq, const Petsc
 }
 
 /*
-    Set values to the split rhs vector.
+    Set values to the subvector b_n[].
     R is the rhs from svFSI in O1 order.
 */
 PetscErrorCode petsc_set_splitvec(const PetscInt dof, const PetscInt cEq, const PetscReal *R)
@@ -1230,11 +1160,8 @@ PetscErrorCode petsc_set_splitvec(const PetscInt dof, const PetscInt cEq, const 
 
     PetscFunctionBeginUser;
 
-    /* Get subvectors from the nested vector */
-    // SubVector 0 (velcoity dof)
-    ierr = VecZeroEntries(psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecZeroEntries 0: " << ierr << std::endl; }
-
+    // b_n[0]
+    PetscCall(VecZeroEntries(psol[cEq].b_n[0]));
     for (i = 0; i < plhs.mynNo; i++)
     {
         ii = plhs.ltg[i];
@@ -1243,42 +1170,30 @@ PetscErrorCode petsc_set_splitvec(const PetscInt dof, const PetscInt cEq, const 
         {
             row = ii * (dof-1) + k;
             value = R[indx * dof + k];
-            ierr = VecSetValue(psol[cEq].b_n[0], row, value, INSERT_VALUES);
-            if (ierr) { std::cout << "Error in VecSetValue 0: " << ierr << std::endl;}
+            PetscCall(VecSetValue(psol[cEq].b_n[0], row, value, INSERT_VALUES));
         }
     }
 
-    ierr = VecAssemblyBegin(psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecAssemblyBegin 0: " << ierr << std::endl;}
-    ierr = VecAssemblyEnd(psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in VecAssemblyEnd 0: " << ierr << std::endl;}
+    PetscCall(VecAssemblyBegin(psol[cEq].b_n[0]));
+    PetscCall(VecAssemblyEnd(psol[cEq].b_n[0]));
 
-    ierr = VecGhostUpdateBegin(psol[cEq].b_n[0], INSERT_VALUES, SCATTER_FORWARD); 
-    if (ierr) { std::cout << "Error in VecGhostUpdateBegin 0: " << ierr << std::endl;}
-    ierr = VecGhostUpdateEnd(psol[cEq].b_n[0], INSERT_VALUES, SCATTER_FORWARD);
-    if (ierr) { std::cout << "Error in VecGhostUpdateEnd 0: " << ierr << std::endl;} 
+    PetscCall(VecGhostUpdateBegin(psol[cEq].b_n[0], INSERT_VALUES, SCATTER_FORWARD));
+    PetscCall(VecGhostUpdateEnd(psol[cEq].b_n[0], INSERT_VALUES, SCATTER_FORWARD));
 
-    // SubVector 1 (Pressure dof)
-    ierr = VecZeroEntries(psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecZeroEntries 1: " << ierr << std::endl;}
-
+    // b_n[1]
+    PetscCall(VecZeroEntries(psol[cEq].b_n[1]));
     for (i = 0; i < plhs.mynNo; i++)
     {
         row = plhs.ltg[i];
         indx = plhs.map[i];
         value = R[indx * dof + dof - 1];
-        ierr = VecSetValue(psol[cEq].b_n[1], row, value, INSERT_VALUES);
-        if (ierr) { std::cout << "Error in VecSetValue 1: " << ierr << std::endl;}
+        PetscCall(VecSetValue(psol[cEq].b_n[1], row, value, INSERT_VALUES));
     }
-    ierr = VecAssemblyBegin(psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecAssemblyBegin 1: " << ierr << std::endl;}
-    ierr = VecAssemblyEnd(psol[cEq].b_n[1]);
-    if (ierr) { std::cout << "Error in VecAssemblyEnd 1: " << ierr << std::endl;}
-    
-    ierr = VecGhostUpdateBegin(psol[cEq].b_n[1], INSERT_VALUES, SCATTER_FORWARD); // Update ghost nodes
-    if (ierr) { std::cout << "Error in VecGhostUpdateBegin 1: " << ierr << std::endl;}
-    ierr = VecGhostUpdateEnd(psol[cEq].b_n[1], INSERT_VALUES, SCATTER_FORWARD);
-    if (ierr) { std::cout << "Error in VecGhostUpdateEnd 1: " << ierr << std::endl;}
+    PetscCall(VecAssemblyBegin(psol[cEq].b_n[1]));
+    PetscCall(VecAssemblyEnd(psol[cEq].b_n[1]));
+
+    PetscCall(VecGhostUpdateBegin(psol[cEq].b_n[1], INSERT_VALUES, SCATTER_FORWARD));
+    PetscCall(VecGhostUpdateEnd(psol[cEq].b_n[1], INSERT_VALUES, SCATTER_FORWARD));
     
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1314,7 +1229,7 @@ PetscErrorCode petsc_set_mat(const PetscInt dof, const PetscInt cEq, const Petsc
 }
 
 /*
-    Set values to the nested matrix by updating the submatrices.
+    Set values to the submatrices A_mn[].
 */
 PetscErrorCode petsc_set_splitmat(const PetscInt dof, const PetscInt cEq, const PetscReal *Val)
 {
@@ -1327,14 +1242,10 @@ PetscErrorCode petsc_set_splitmat(const PetscInt dof, const PetscInt cEq, const 
     PetscFunctionBeginUser;
 
     /* Initializing submatrices */
-    ierr = MatZeroEntries(psol[cEq].A_mn[0]);
-    if (ierr) { std::cout << "Error in MatZeroEntries 0: " << ierr << std::endl;}
-    ierr = MatZeroEntries(psol[cEq].A_mn[1]);
-    if (ierr) { std::cout << "Error in MatZeroEntries 1: " << ierr << std::endl;}
-    ierr = MatZeroEntries(psol[cEq].A_mn[2]);
-    if (ierr) { std::cout << "Error in MatZeroEntries 2: " << ierr << std::endl;}
-    ierr = MatZeroEntries(psol[cEq].A_mn[3]);
-    if (ierr) { std::cout << "Error in MatZeroEntries 3: " << ierr << std::endl;}
+    PetscCall(MatZeroEntries(psol[cEq].A_mn[0]));
+    PetscCall(MatZeroEntries(psol[cEq].A_mn[1]));
+    PetscCall(MatZeroEntries(psol[cEq].A_mn[2]));
+    PetscCall(MatZeroEntries(psol[cEq].A_mn[3]));
 
     for (i = 0; i < plhs.nNo; i++)
     {
@@ -1370,10 +1281,14 @@ PetscErrorCode petsc_set_splitmat(const PetscInt dof, const PetscInt cEq, const 
         }
     }
 
-    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[0], MAT_FLUSH_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[0], MAT_FLUSH_ASSEMBLY));
-    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[1], MAT_FLUSH_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[1], MAT_FLUSH_ASSEMBLY));
-    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[2], MAT_FLUSH_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[2], MAT_FLUSH_ASSEMBLY));
-    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[3], MAT_FLUSH_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[3], MAT_FLUSH_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[0], MAT_FLUSH_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(psol[cEq].A_mn[0], MAT_FLUSH_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[1], MAT_FLUSH_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(psol[cEq].A_mn[1], MAT_FLUSH_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[2], MAT_FLUSH_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(psol[cEq].A_mn[2], MAT_FLUSH_ASSEMBLY));
+    PetscCall(MatAssemblyBegin(psol[cEq].A_mn[3], MAT_FLUSH_ASSEMBLY)); 
+    PetscCall(MatAssemblyEnd(psol[cEq].A_mn[3], MAT_FLUSH_ASSEMBLY));
 
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1413,19 +1328,12 @@ PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, const Pe
     PetscCall(VecPlaceArray(x, DirBC));
     PetscCall(MatZeroRowsColumns(psol[cEq].A, psol[cEq].DirPts, psol[cEq].DirBC, 1.0, x, psol[cEq].b));
 
-    // MATRICES EXPORT FOR DEBUGGING
-    PetscViewer viewer;
-    PetscViewerBinaryOpen(PETSC_COMM_WORLD, "matrix.dat", FILE_MODE_WRITE, &viewer);
-    MatView(psol[cEq].A, viewer);
-    PetscViewerDestroy(&viewer);
-    // END MATRICES EXPORT FOR DEBUGGING
-
     PetscCall(VecDestroy(&x));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 /*
-    Set up split Dirichlet BC and resistance BC.
+    Set up Dirichlet BC and resistance BC for submatrices A_mn[] and subvectors b_n[].
 */
 PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, const PetscReal *lpBC)
 {
@@ -1486,14 +1394,10 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
 
     /*
         Apply Dirichlet BC by resetting submatrices A_mn and rhs b_n.
-        Since the BC remains the same, the matrix will retain the same nonzero structure
     */
-    ierr = VecDuplicate(psol[cEq].b_n[0], &x);
-    if (ierr) { std::cout << "Error in VecDuplicate: " << ierr << std::endl;}
-    ierr = VecPlaceArray(x, psol[cEq].svFSI_DirBC_0);
-    if (ierr) { std::cout << "Error in VecPlaceArray: " << ierr << std::endl;}
-    ierr = MatZeroRowsColumns(psol[cEq].A_mn[0], psol[cEq].DirPts_0, psol[cEq].DirBC_0, 1.0, x, psol[cEq].b_n[0]);
-    if (ierr) { std::cout << "Error in MatZeroRowsColumns 0: " << ierr << std::endl;}
+    PetscCall(VecDuplicate(psol[cEq].b_n[0], &x));
+    PetscCall(VecPlaceArray(x, psol[cEq].svFSI_DirBC_0));
+    PetscCall(MatZeroRowsColumns(psol[cEq].A_mn[0], psol[cEq].DirPts_0, psol[cEq].DirBC_0, 1.0, x, psol[cEq].b_n[0]));
     
     PetscCall(MatZeroRows(psol[cEq].A_mn[1], psol[cEq].DirPts_0, psol[cEq].DirBC_0, 0.0, NULL, NULL));
     
@@ -1509,26 +1413,11 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
     PetscCall(VecPlaceArray(x, psol[cEq].svFSI_DirBC_1));
     PetscCall(MatZeroRowsColumns(psol[cEq].A_mn[3], psol[cEq].DirPts_1, psol[cEq].DirBC_1, 1.0, x, psol[cEq].b_n[1]));
 
-    // MATRICES EXPORT FOR DEBUGGING
-    PetscViewer viewer;
-    PetscViewerBinaryOpen(PETSC_COMM_WORLD, "matrix00.dat", FILE_MODE_WRITE, &viewer);
-    MatView(psol[cEq].A_mn[0], viewer);
-    PetscViewerBinaryOpen(PETSC_COMM_WORLD, "matrix01.dat", FILE_MODE_WRITE, &viewer);
-    MatView(psol[cEq].A_mn[1], viewer);
-    PetscViewerBinaryOpen(PETSC_COMM_WORLD, "matrix10.dat", FILE_MODE_WRITE, &viewer);
-    MatView(psol[cEq].A_mn[2], viewer);
-    PetscViewerBinaryOpen(PETSC_COMM_WORLD, "matrix11.dat", FILE_MODE_WRITE, &viewer);
-    MatView(psol[cEq].A_mn[3], viewer);
-    PetscViewerDestroy(&viewer);
-    // END MATRICES EXPORT FOR DEBUGGING
-
     /* Assemble the nested matrix */
-    ierr = MatCreateNest(MPI_COMM_WORLD, 2, NULL, 2, NULL, psol[cEq].A_mn, &psol[cEq].A);
-    if (ierr) { std::cout << "Error in MatCreateNest: " << ierr << std::endl;}
-    MatNestSetVecType(psol[cEq].A,VECNEST);
+    PetscCall(MatCreateNest(MPI_COMM_WORLD, 2, NULL, 2, NULL, psol[cEq].A_mn, &psol[cEq].A));
+    PetscCall(MatNestSetVecType(psol[cEq].A,VECNEST));
 
-    ierr = VecCreateNest(MPI_COMM_WORLD, 2, NULL, psol[cEq].b_n, &psol[cEq].b);
-    if (ierr) { std::cout << "Error in VecCreateNest: " << ierr << std::endl;}
+    PetscCall(VecCreateNest(MPI_COMM_WORLD, 2, NULL, psol[cEq].b_n, &psol[cEq].b));
  
     // Clean up
     PetscCall(MatDestroy(&transpose));
@@ -1929,382 +1818,184 @@ BlockNestedPreconditioner::~BlockNestedPreconditioner()
     delete solver_1;
 
     // Clean up block matrices
-    if (A_mn) {
+    if (subA) {
         for (PetscInt i = 0; i < 3; ++i) {
             for (PetscInt j = 0; j < 3; ++j) {
-                MatDestroy(&A_mn[i][j]);
+                MatDestroy(&subA[i][j]);
             }
-            PetscFree(A_mn[i]);
+            PetscFree(subA[i]);
         }
-        PetscFree(A_mn);
+        PetscFree(subA);
     }
 
     // Clean up sub-vectors
-    if (r_m) {
+    if (subR) {
         for (PetscInt i = 0; i < 2; ++i) {
-            VecDestroy(&r_m[i]);
+            VecDestroy(&subR[i]);
         }
-        PetscFree(r_m);
+        PetscFree(subR);
     }
 
-    if (z_m) {
+    if (subZ) {
         for (PetscInt i = 0; i < 2; ++i) {
-            VecDestroy(&z_m[i]);
+            VecDestroy(&subZ[i]);
         }
-        PetscFree(z_m);
+        PetscFree(subZ);
     }
 
     MatDestroy(&Ps);
-
-    // Clean up index sets
-    //ISDestroy(&row_velocity_is);
-    //ISDestroy(&row_pressure_is);
-    //ISDestroy(&col_velocity_is);
-    //ISDestroy(&col_pressure_is);
-    // Clean up block matrices
-    // MatDestroy(&A_00);
-    // MatDestroy(&A_01);
-    // MatDestroy(&A_10);
-    // MatDestroy(&A_11);
-    // Clean up sub-vectors
-    // VecDestroy(&r_0);
-    //VecDestroy(&r_1);
-    //VecDestroy(&z_0);
-    //VecDestroy(&z_1);
 };
-
-//PetscErrorCode BlockNestedPreconditioner::Initialize(const PetscInt dof, const PetscInt nnz)
-//{
-//    PetscInt i, j, ii, jj, l, count, is, ie;
-//    std::vector<PetscInt> ruindx, cuindx, rpindx, cpindx;
-    //PetscInt *ruindx, *rpindx, *cuindx, *cpindx;
-
-    // Create index set for velocity and pressure block
-    /*PetscCall(PetscMalloc1((dof - 1) * plhs.mynNo, &ruindx));
-    PetscCall(PetscMalloc1((dof - 1) * nnz, &cuindx));
-    PetscCall(PetscMalloc1(plhs.mynNo, &rpindx);)
-    PetscCall(PetscMalloc1(nnz, &cpindx));*/
-
-//    ruindx.reserve((dof - 1) * plhs.mynNo);
-//    cuindx.reserve((dof-1) * nnz);
-//    rpindx.reserve(plhs.mynNo);
-//    cpindx.reserve(nnz);
-
-    /*for (i = 0; i < plhs.nNo; i++){
-        ii = (dof-1)*i;
-        jj = dof*plhs.ltg[i];
-        for (j = 0; j < dof-1; j++){
-            uindx[ii+j] = jj + j;
-        }
-        pindx[i] = jj + dof - 1;
-    }
-    */
-//    for (i = 0; i < plhs.mynNo; i++)
-//    {
-//        ii = (dof - 1) * i;
-//        is = plhs.rowPtr[i * 2];
-//        ie = plhs.rowPtr[i * 2 + 1];
-//        jj = dof * plhs.ltg[i];
-//        for (j = 0; j < dof - 1; j++)
-//        {
-//            ruindx.push_back(jj + j); // velocity row index
-//        }
-//        for (j = is; j < ie; j++)
-//        {
-//            for (l = 0; l < dof - 1; l++)
-//           {
-//                cuindx.push_back(plhs.colPtr[j] + l); // velocity column index
-//            }
-//            cpindx.push_back(plhs.colPtr[j] + (dof - 1)); // pressure column index
-//        }
-//        rpindx.push_back(jj + dof - 1); // pressure row index
-//   }
-
-    /*PetscCall(ISCreateGeneral(MPI_COMM_WORLD, (dof - 1) * plhs.mynNo, ruindx, PETSC_COPY_VALUES, &row_velocity_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, (dof - 1) * plhs.mynNo, cuindx, PETSC_COPY_VALUES, &col_velocity_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, plhs.mynNo, rpindx, PETSC_COPY_VALUES, &row_pressure_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, plhs.mynNo, cpindx, PETSC_COPY_VALUES, &col_pressure_is));*/
-
-    /*PetscCall(ISCreateGeneral(MPI_COMM_WORLD, (dof-1)*plhs.mynNo, indx, PETSC_COPY_VALUES, &row_velocity_is));
-    PetscCall(ISSetBlockSize(row_velocity_is, dof-1));
-    PetscCall(ISSort(velocity_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, plhs.mynNo, pindx, PETSC_COPY_VALUES, &pressure_is));
-    PetscCall(ISSort(pressure_is));
-    */
-
-    /*
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, ruindx.size(), ruindx.data(), PETSC_COPY_VALUES, &row_velocity_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, cuindx.size(), cuindx.data(), PETSC_COPY_VALUES, &col_velocity_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, rpindx.size(), rpindx.data(), PETSC_COPY_VALUES, &row_pressure_is));
-    PetscCall(ISCreateGeneral(MPI_COMM_WORLD, cpindx.size(), cpindx.data(), PETSC_COPY_VALUES, &col_pressure_is));
-
-    PetscViewer viewer;
-    PetscViewerASCIIOpen(MPI_COMM_WORLD, "row_index.m", &viewer);
-    PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATLAB);
-    ISView(row_velocity_is, viewer);
-    PetscViewerASCIIOpen(MPI_COMM_WORLD, "col_index.m", &viewer);
-    PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATLAB);
-    ISView(col_velocity_is, viewer);
-    PetscViewerDestroy(&viewer);
-
-    // Initialize block matrices to NULL
-    A_00 = NULL;
-    A_01 = NULL;
-    A_10 = NULL;
-    A_11 = NULL;
-
-    // Initialize r_0, r_1 and z_0, z_1 based on the row velocity-pressure index set
-    PetscCall(ISGetLocalSize(row_velocity_is, &local_size_v));
-    //PetscCall(VecCreateMPI(MPI_COMM_WORLD, local_size_v, PETSC_DECIDE, &r_0));
-    //PetscCall(VecDuplicate(r_0, &z_0));
-
-    PetscCall(ISGetLocalSize(row_pressure_is, &local_size_p));
-    //PetscCall(VecCreateMPI(MPI_COMM_WORLD, local_size_p, PETSC_DECIDE, &r_1));
-    //PetscCall(VecDuplicate(r_1, &z_1));*/
-
-    //PetscCall(PetscFree2(ruindx, cuindx));
-    //PetscCall(PetscFree2(rpindx, cpindx));
- 
-//    return PETSC_SUCCESS;
-    
-//} 
 
 PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec z)
 {
-    std::cout << "INSIDE PCAPPLY" << std::endl;
     Vec z_0_temp, z_1_temp;
 
     PetscErrorCode ierr;
 
-    // Split the residual vector r into velocity (r_0) and pressure (r_1) components
-    ierr = VecNestGetSubVecs(r, NULL, &r_m);
-    if (ierr) { std::cout << "Error in VecNestGetSubVecs r: " << ierr << std::endl;}
-    ierr = VecNestGetSubVecs(z, NULL, &z_m);
-    if (ierr) { std::cout << "Error in VecNestGetSubVecs z: " << ierr << std::endl;}
+    PetscFunctionBeginUser;
 
-    PetscCall(VecDuplicate(z_m[0], &z_0_temp));
-    PetscCall(VecDuplicate(z_m[1], &z_1_temp));
+    // Getting subvectors from nested vectors
+    PetscCall(VecNestGetSubVecs(r, NULL, &subR));
+    PetscCall(VecNestGetSubVecs(z, NULL, &subZ));
+
+    PetscCall(VecDuplicate(subZ[0], &z_0_temp));
+    PetscCall(VecDuplicate(subZ[1], &z_1_temp));
 
     PetscCall(VecSet(z_0_temp, 0.0));
     PetscCall(VecSet(z_1_temp, 0.0)); 
     VecAssemblyBegin(z_0_temp); VecAssemblyEnd(z_0_temp);
     VecAssemblyBegin(z_1_temp); VecAssemblyEnd(z_1_temp);
     
-    //================================ DEBUG ================================
-    /*PetscInt localRows, localCols, localSize;
-    MatGetLocalSize(A_mn[0][0], &localRows, &localCols);
-    std::cout << "INSIDE PCAPPLY Local matrix size: " << localRows << " x " << localCols << std::endl;
-    VecGetLocalSize(z_0_temp, &localSize);
-    std::cout << "INSIDE PCAPPLY Local vector size: " << localSize << std::endl;*/
-    //================================ DEBUG ================================
+    //-------------------------------------------------
+    // Intermediate solver
 
     /*
-    PetscCall(VecGetSubVector(r, row_velocity_is, &r_0));
-    PetscCall(VecGetSubVector(r, row_pressure_is, &r_1));
-    PetscCall(VecDuplicate(r_0, &z_0));
-    PetscCall(VecDuplicate(r_1, &z_1));
-    PetscCall(VecDuplicate(z_0, &z_0_temp));
-    PetscCall(VecDuplicate(z_1, &z_1_temp));
-
-    PetscCall(VecSet(z_0, 0.0));
-    PetscCall(VecSet(z_1, 0.0));
-    PetscCall(VecSet(z_0_temp, 0.0));
-    PetscCall(VecSet(z_1_temp, 0.0));
+     -------------------------------------------------
+     solver_0 -> A_00 * z_0 = r_0 
+     -------------------------------------------------
     */
+    // Preconditioner to solver_0
+    PC pc_0;
+    solver_1->GetPC(&pc_0);
+    PetscCall(PCSetType(pc_0, PCHYPRE));
+    PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
 
-    // Intermediate solver
-    //-------------------------------------------------
-    // z_0 = A_00^{-1} * r_0 -> solver_0
-    //-------------------------------------------------
-    //PC pc_0;
-    //solver_0->GetPC(&pc_0);
-    //PetscCall(PCSetType(pc_0, PCJACOBI));
-    //PCHYPRESetType(pc_0, "boomeramg");
-    //solver_0->SetOperator(A_mn[0][0]);
-    // PC pc_0;
-    // solver_1->GetPC(&pc_0);
-    // PetscCall(PCSetType(pc_0, PCHYPRE));
-    // PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
+    // Set HYPRE BoomerAMG options
+    PetscCall(PCSetFromOptions(pc_0)); // Ensure options are taken from command line
 
-    // // Set HYPRE BoomerAMG options
-    // PetscCall(PCSetFromOptions(pc_0)); // Ensure options are taken from command line
+    // Set cycle type: V-cycle (1)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1"));
 
-    // // Set cycle type: V-cycle (1)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1"));
+    // Set coarsening method: HMIS (8)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8"));
 
-    // // Set coarsening method: HMIS (8)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8"));
+    // Set interpolation method: Extended ext+i (6)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6"));
 
-    // // Set interpolation method: Extended ext+i (6)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6"));
+    // Set smoother: Hybrid Gauss-Seidel (hybrid = 3)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3"));
 
-    // // Set smoother: Hybrid Gauss-Seidel (hybrid = 3)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3"));
+    // Set truncation factor for interpolation
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3"));
 
-    // // Set truncation factor for interpolation
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3"));
+    // Set threshold for strong connections
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5"));
 
-    // // Set threshold for strong connections
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5"));
+    // Set max number of elements per row for interpolation
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5"));
 
-    // // Set max number of elements per row for interpolation
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5"));
+    // Set number of levels for aggressive coarsening
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2"));
 
-    // // Set number of levels for aggressive coarsening
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2"));
+    solver_0->Solve(subR[0], subZ[0], PETSC_FALSE);
 
-    std::cout << "FIRST SOLVER 0" << std::endl;
-    //solver_0->Monitor();
-    solver_0->Solve(r_m[0], z_m[0], PETSC_FALSE);
+    //PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
-    //====================== CONDITION NUMBER =======================
-    PetscReal sigma_max, sigma_min, cond_num;
-    KSPComputeExtremeSingularValues(solver_0->ksp, &sigma_max, &sigma_min);
-    cond_num = sigma_max / sigma_min;
-    std::cout << "Estimated condition number Schur matrix free: %g\n" << (double)cond_num << std::endl;
-    //====================== END CONDITION NUMBER =======================
+    /*
+     -------------------------------------------------
+     z_1 = r_1 - A_10 * z_0
+     -------------------------------------------------
+    */
+    PetscCall(MatMult(subA[1][0], subZ[0], z_1_temp));
+    //PetscCall(VecAssemblyBegin(z_1_temp)); PetscCall(VecAssemblyEnd(z_1_temp));
 
-    ierr = VecAssemblyBegin(z_m[0]); 
-    if (ierr) { std::cout << "Error in VecAssemblyBegin z_m[0]: " << ierr << std::endl;}
-    ierr = VecAssemblyEnd(z_m[0]);
-    if (ierr) { std::cout << "Error in VecAssemblyEnd z_m[0]: " << ierr << std::endl;}
+    PetscCall(VecWAXPY(subZ[1], -1.0, z_1_temp, subR[1]));
+    //PetscCall(VecAssemblyBegin(subZ[1])); PetscCall(VecAssemblyEnd(subZ[1]));
 
     //-------------------------------------------------
-    // z_1 = r_1 - A_10 * z_0
-    //-------------------------------------------------
-    ierr = MatMult(A_mn[1][0], z_m[0], z_1_temp);
-    if (ierr) { std::cout << "Error in MatMult A_mn[1][0]: " << ierr << std::endl;}
-    VecAssemblyBegin(z_1_temp); VecAssemblyEnd(z_1_temp);
+    // Inner solver 
 
-    PetscCall(VecWAXPY(z_m[1], -1.0, z_1_temp, r_m[1]));
-    VecAssemblyBegin(z_m[1]); VecAssemblyEnd(z_m[1]);
-    //-------------------------------------------------
-    // S * z_1 = r_1 - A_10 * z_0 -> inner solver
-    // S = A_11 - A_10 * A_00^{-1} * A_01
-    // matrix-free alghorithm for S involves application
-    // of S to a vector x = r_1 - A_10 * z_0 and using
-    // GMRES solver to solve for z_1
-    //-------------------------------------------------
-    // PC pc_1;
-    // solver_1->GetPC(&pc_1);
-    // PetscCall(PCSetType(pc_1, PCHYPRE));
-    // PetscCall(PCHYPRESetType(pc_1, "boomeramg"));
+    /*
+      -------------------------------------------------
+      solver_1 -> S * z_1 = r_1 - A_10 * z_0 
+      S = A_11 - A_10 * A_00^{-1} * A_01
+      matrix-free alghorithm for S involves application
+      of S to a vector x = r_1 - A_10 * z_0 and using
+      GMRES solver to solve for z_1
+      -------------------------------------------------
+    */
+    // Preconditioner to solver_1
+    PC pc_1;
+    solver_1->GetPC(&pc_1);
+    PetscCall(PCSetType(pc_1, PCHYPRE));
+    PetscCall(PCHYPRESetType(pc_1, "boomeramg"));
 
-    // // Set HYPRE BoomerAMG options
-    // PetscCall(PCSetFromOptions(pc_1)); // Ensure options are taken from command line
+    // Set HYPRE BoomerAMG options
+    PetscCall(PCSetFromOptions(pc_1)); // Ensure options are taken from command line
 
-    // // Set cycle type: V-cycle (1)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1"));
+    // Set cycle type: V-cycle (1)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1"));
 
-    // // Set coarsening method: HMIS (8)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8"));
+    // Set coarsening method: HMIS (8)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8"));
 
-    // // Set interpolation method: Extended ext+i (6)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6"));
+    // Set interpolation method: Extended ext+i (6)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6"));
 
-    // // Set smoother: Hybrid Gauss-Seidel (hybrid = 3)
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3"));
+    // Set smoother: Hybrid Gauss-Seidel (hybrid = 3)
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3"));
 
-    // // Set truncation factor for interpolation
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3"));
+    // Set truncation factor for interpolation
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3"));
 
-    // // Set threshold for strong connections
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5"));
+    // Set threshold for strong connections
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5"));
 
-    // // Set max number of elements per row for interpolation
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5"));
+    // Set max number of elements per row for interpolation
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5"));
 
-    // // Set number of levels for aggressive coarsening
-    // PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2"));
+    // Set number of levels for aggressive coarsening
+    PetscCall(PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2"));
 
 
     // Create the MatrixFreeSchurComplement object
-    MatrixFreeSchurComplement *SchurCompl = new MatrixFreeSchurComplement(A_mn, solver_0);
-    // Apply the Schur complement
+    MatrixFreeSchurComplement *SchurCompl = new MatrixFreeSchurComplement(subA, solver_0);
     SchurCompl->ApplySchurComplement();
-    // Set the operator for solver_1 to the Schur complement matrix
     solver_1->SetOperator(SchurCompl->GetSchurMatrix(), Ps);
 
-    // Solve the system using matrix-free GMRES solver
-    //solver_1->Monitor();
-    ierr = solver_1->Solve(z_m[1], z_m[1], PETSC_TRUE);
-    if (ierr) { std::cout << "Error in solver_1->Solve: " << ierr << std::endl;}
-
-    //====================== CONDITION NUMBER =======================
-    //PetscReal sigma_max, sigma_min, cond_num;
-    KSPComputeExtremeSingularValues(solver_1->ksp, &sigma_max, &sigma_min);
-    cond_num = sigma_max / sigma_min;
-    std::cout << "Estimated condition number Schur matrix free: %g\n" << (double)cond_num << std::endl;
-    //====================== END CONDITION NUMBER =======================
+    solver_1->Solve(subZ[1], subZ[1], PETSC_FALSE);
     
-    VecAssemblyBegin(z_m[1]); VecAssemblyEnd(z_m[1]);
+    //PetscCall(VecAssemblyBegin(subZ[1])); PetscCall(VecAssemblyEnd(subZ[1]));
 
     // Update the momentum residual: z_0 = r_0 - A_01 * z_1
-    PetscCall(MatMult(A_mn[0][1], z_m[1], z_0_temp));
-    VecAssemblyBegin(z_0_temp); VecAssemblyEnd(z_0_temp);
+    PetscCall(MatMult(subA[0][1], subZ[1], z_0_temp));
+    //PetscCall(VecAssemblyBegin(z_0_temp)); PetscCall(VecAssemblyEnd(z_0_temp));
 
-    PetscCall(VecWAXPY(z_m[0], -1.0, z_0_temp, r_m[0]));
-    VecAssemblyBegin(z_m[0]); VecAssemblyEnd(z_m[0]);
+    PetscCall(VecWAXPY(subZ[0], -1.0, z_0_temp, subR[0]));
+    //PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
-    // Solve A_00 * z_0 = r_0
-    //solver_0->Monitor();
-    solver_0->Solve(z_m[0], z_m[0], PETSC_FALSE);
-    VecAssemblyBegin(z_m[0]); VecAssemblyEnd(z_m[0]);
-
-    // Combine results back into the full vector z = PC^{-1} * r
-    //const PetscInt *velocity_indices, *pressure_indices;
-    //const PetscScalar *z_0_array, *z_1_array;
-
-    /* 
-    PetscCall(VecGetArrayRead(z_0, &z_0_array));
-    PetscCall(VecGetArrayRead(z_1, &z_1_array));
-    PetscCall(ISGetIndices(row_velocity_is, &velocity_indices));
-    PetscCall(ISGetIndices(row_pressure_is, &pressure_indices));
-
-    // Set the velocity values into z
-    for (PetscInt i = 0; i < local_size_v; ++i)
-    {   
-        PetscCall(VecSetValue(z, velocity_indices[i], z_0_array[i], INSERT_VALUES));
-    }
-    // Set the pressure values into z
-    for (PetscInt i = 0; i < local_size_p; ++i)
-    {
-        PetscCall(VecSetValue(z, pressure_indices[i], z_1_array[i], INSERT_VALUES));
-    }
-    */
-
-    //=============== DEBUG =================
-    /*PetscPrintf(MPI_COMM_WORLD, "Setting z_0 values into z.\n");
-    for (PetscInt i = 0; i < local_size_v; ++i)
-    {
-        std::cout << "z[" << velocity_indices[i] << "] = " << z_0_array[i] << std::endl;
-        PetscPrintf(MPI_COMM_WORLD, "z[%d] = %f\n", velocity_indices[i], z_0_array[i]);
-    }
-
-    PetscPrintf(MPI_COMM_WORLD, "Setting z_1 values into z.\n");
-    for (PetscInt i = 0; i < local_size_p; ++i)
-    {
-        std::cout << "z[" << pressure_indices[i] << "] = " << z_1_array[i] << std::endl;
-        PetscPrintf(MPI_COMM_WORLD, "z[%d] = %f\n", pressure_indices[i], z_1_array[i]);
-    }*/
-    //=============== END DEBUG =================
-
-    // Clean up
-    // Restore the local arrays and indices
     /*
-    PetscCall(VecRestoreArrayRead(z_0, &z_0_array));
-    PetscCall(VecRestoreArrayRead(z_1, &z_1_array));
-    PetscCall(ISRestoreIndices(row_velocity_is, &velocity_indices));
-    PetscCall(ISRestoreIndices(row_pressure_is, &pressure_indices));
-
-    PetscCall(VecAssemblyBegin(z));
-    PetscCall(VecAssemblyEnd(z)); 
+     -------------------------------------------------
+     Solve A_00 * z_0 = r_0
+     -------------------------------------------------
     */
+    solver_0->Solve(subZ[0], subZ[0], PETSC_FALSE);
+    //PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
-    // Cleanup sub-vectors
-    //PetscCall(VecRestoreSubVector(r, row_velocity_is, &r_0));
-    //PetscCall(VecRestoreSubVector(r, row_pressure_is, &r_1));
-
+    PetscCall(VecAssemblyBegin(subZ[1])); PetscCall(VecAssemblyEnd(subZ[1]));
+    PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
+    
+    // Clean up
     PetscCall(VecDestroy(&z_0_temp));
     PetscCall(VecDestroy(&z_1_temp));
 
@@ -2315,15 +2006,11 @@ PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_Apply(PC pc, Vec r, Vec 
 
 PetscErrorCode BlockNestedPreconditioner::BlockNestedPC_SetMatrix(Mat A)
 {
-    PetscErrorCode ierr;
-    
-    ierr = MatNestGetSubMats(A, NULL, NULL, &A_mn);
-    if (ierr) { std::cout << "Error in MatNestGetSubMats: " << ierr << std::endl;}
+    PetscCall(MatNestGetSubMats(A, NULL, NULL, &subA));
 
-    // Setting the approximate Schur complement matrix
-    SetApproximateSchur(A_mn);
+    SetApproximateSchur(subA);
 
-    solver_0->SetOperator(A_mn[0][0]);
+    solver_0->SetOperator(subA[0][0]);
 
     return PETSC_SUCCESS;
 };
@@ -2334,56 +2021,35 @@ PetscErrorCode BlockNestedPreconditioner::SetApproximateSchur(Mat **A)
     Mat BinvDiagA, CBinvDiagA;
 
     // Extract the diagonal of A
-    MatCreateVecs(A[0][0], &diagA, NULL);
-    MatGetDiagonal(A[0][0], diagA);
+    PetscCall(MatCreateVecs(A[0][0], &diagA, NULL));
+    PetscCall(MatGetDiagonal(A[0][0], diagA));
 
     // Compute inverse of the diagonal 
-    VecDuplicate(diagA, &invDiagA);
-    VecReciprocal(diagA);
+    PetscCall(VecDuplicate(diagA, &invDiagA));
+    PetscCall(VecReciprocal(diagA));
 
     // Compute BinvDiagA = B * invDiagA (Diagonal scaling)
-    MatDuplicate(A[0][1], MAT_COPY_VALUES, &BinvDiagA);
-    MatDiagonalScale(BinvDiagA, invDiagA, NULL);
+    PetscCall(MatDuplicate(A[0][1], MAT_COPY_VALUES, &BinvDiagA));
+    PetscCall(MatDiagonalScale(BinvDiagA, invDiagA, NULL));
 
     // Compute CBinvDiagA = C * BinvDiagA
-    MatMatMult(A[1][0], BinvDiagA, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &CBinvDiagA);
+    PetscCall(MatMatMult(A[1][0], BinvDiagA, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &CBinvDiagA));
 
     // Compute Schur complement approximation Ps = D - CBinvDiagA
-    MatDuplicate(A[1][1], MAT_COPY_VALUES, &Ps);
-    MatAXPY(Ps, -1.0, CBinvDiagA, DIFFERENT_NONZERO_PATTERN); 
+    PetscCall(MatDuplicate(A[1][1], MAT_COPY_VALUES, &Ps));
+    PetscCall(MatAXPY(Ps, -1.0, CBinvDiagA, DIFFERENT_NONZERO_PATTERN)); 
 
     // Cleanup
-    VecDestroy(&diagA);
-    VecDestroy(&invDiagA);
-    MatDestroy(&BinvDiagA);
-    MatDestroy(&CBinvDiagA);
+    PetscCall(VecDestroy(&diagA));
+    PetscCall(VecDestroy(&invDiagA));
+    PetscCall(MatDestroy(&BinvDiagA));
+    PetscCall(MatDestroy(&CBinvDiagA));
 }
 
 //-------------------------------------------------------------------------
 // Internal Linear solver for the Block Nested Preconditioner:
 // solver_0, solver_1
 //-------------------------------------------------------------------------
-
-BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver()
-    : rtol(1.0e-5), atol(1.0e-50), dtol(1.0e50), maxits(10000)
-{
-    KSPCreate(MPI_COMM_WORLD, &ksp);
-    KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
-    KSPSetType(ksp, KSPGMRES);
-    KSPSetFromOptions(ksp);
-};
-
-BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
-    const double &input_rtol, const double &input_atol,
-    const double &input_dtol, const int &input_maxits)
-    : rtol(input_rtol), atol(input_atol),
-      dtol(input_dtol), maxits(input_maxits)
-{
-    KSPCreate(MPI_COMM_WORLD, &ksp);
-    KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
-    KSPSetType(ksp, KSPGMRES);
-    KSPSetFromOptions(ksp);
-};
 
 BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
     const double &input_rtol, const double &input_atol,
@@ -2392,26 +2058,9 @@ BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
     : rtol(input_rtol), atol(input_atol),
       dtol(input_dtol), maxits(input_maxits)
 {
-    /*PetscErrorCode ierr;
-    ierr = KSPCreate(MPI_COMM_WORLD, &ksp); PetscCallAbort(MPI_COMM_WORLD, ierr);
-    ierr = KSPSetTolerances(ksp, rtol, atol, dtol, maxits); PetscCallAbort(MPI_COMM_WORLD, ierr);
-    ierr = KSPSetType(ksp, KSPGMRES); PetscCallAbort(MPI_COMM_WORLD, ierr);
-    ierr = KSPSetOptionsPrefix(ksp, ksp_prefix); PetscCallAbort(MPI_COMM_WORLD, ierr);
-
-    PC ksp_pc;
-    ierr = KSPGetPC(ksp, &ksp_pc); PetscCallAbort(MPI_COMM_WORLD, ierr);
-    ierr = PCSetOptionsPrefix(ksp_pc, pc_prefix); PetscCallAbort(MPI_COMM_WORLD, ierr);
-
-    ierr = KSPSetFromOptions(ksp); PetscCallAbort(MPI_COMM_WORLD, ierr);
-    ierr = PCSetFromOptions(ksp_pc); PetscCallAbort(MPI_COMM_WORLD, ierr); */
-
     KSPCreate(MPI_COMM_WORLD, &ksp);
     KSPSetTolerances(ksp, rtol, atol, dtol, maxits);
     
-    //================ CONDITION NUMBER ACTIVE =================
-    KSPSetComputeSingularValues(ksp, PETSC_TRUE);
-    //================ END CONDITION NUMBER ACTIVE =================
-
     KSPSetType(ksp, KSPGMRES);
     KSPSetOptionsPrefix(ksp, ksp_prefix);
     
@@ -2424,32 +2073,13 @@ BlockNestedPC_InternalLinearSolver::BlockNestedPC_InternalLinearSolver(
 
 BlockNestedPC_InternalLinearSolver::~BlockNestedPC_InternalLinearSolver()
 {
-    PetscErrorCode ierr;
-    ierr = KSPDestroy(&ksp);
-    PetscCallAbort(MPI_COMM_WORLD, ierr);
+    KSPDestroy(&ksp);
 };
 
 PetscErrorCode BlockNestedPC_InternalLinearSolver::Solve(const Vec &G, Vec &out_sol, const bool &isPrint)
 {
-    PetscErrorCode ierr;
-    ierr = KSPSolve(ksp, G, out_sol); if (ierr) {return ierr; }
+    KSPSolve(ksp, G, out_sol);
     
-    if (isPrint)
-    {
-        PetscInt its;
-        KSPGetIterationNumber(ksp, &its);
-        PetscReal resnorm;
-        KSPGetResidualNorm(ksp, &resnorm);
-        PetscPrintf(MPI_COMM_WORLD, "  --- KSP: %d, %e", its, resnorm);
-    }
-};
-
-PetscErrorCode BlockNestedPC_InternalLinearSolver::Solve(const Mat &K, const Vec &G, Vec &out_sol,
-                                               const bool &isPrint)
-{
-    PetscCall(KSPSetOperators(ksp, K, K));
-    PetscCall(KSPSolve(ksp, G, out_sol));
-
     if (isPrint)
     {
         PetscInt its;
@@ -2472,25 +2102,17 @@ MatrixFreeSchurComplement::MatrixFreeSchurComplement(Mat **K, BlockNestedPC_Inte
     PetscInt m, n, mm, nn;
     PetscErrorCode ierr;
 
-    // Initialize the matrix-free context
-    ierr = PetscMalloc1(1, &MatShellCtx);
-    if (ierr) { std::cout << "Error in PetscMalloc1: " << ierr << std::endl; }
-    ierr = MatDuplicate(K[0][0], MAT_COPY_VALUES, &MatShellCtx->A00);
-    if (ierr) { std::cout << "Error in MatCopy A00: " << ierr << std::endl; }
-    ierr = MatDuplicate(K[0][1], MAT_COPY_VALUES, &MatShellCtx->A01);
-    if (ierr) { std::cout << "Error in MatCopy A01: " << ierr << std::endl; }
-    ierr = MatDuplicate(K[1][0], MAT_COPY_VALUES, &MatShellCtx->A10);
-    if (ierr) { std::cout << "Error in MatCopy A10: " << ierr << std::endl; }
-    ierr = MatDuplicate(K[1][1], MAT_COPY_VALUES, &MatShellCtx->A11);
-    if (ierr) { std::cout << "Error in MatCopy A11: " << ierr << std::endl; }
+    // Initialize the shell matrix context
+    PetscMalloc1(1, &MatShellCtx);
+    MatDuplicate(K[0][0], MAT_COPY_VALUES, &MatShellCtx->A00);
+    MatDuplicate(K[0][1], MAT_COPY_VALUES, &MatShellCtx->A01);
+    MatDuplicate(K[1][0], MAT_COPY_VALUES, &MatShellCtx->A10);
+    MatDuplicate(K[1][1], MAT_COPY_VALUES, &MatShellCtx->A11);
 
     MatShellCtx->ASolver = solver_0;
 
-    // Define the size of the Schur complement
-    ierr = MatGetLocalSize(MatShellCtx->A11, &m, &n); PetscCallAbort(MPI_COMM_WORLD, ierr);
-    // Define size of temporary vectors
-    // Define the size of the Schur complement
-    ierr = MatGetLocalSize(MatShellCtx->A01, &mm, &nn); PetscCallAbort(MPI_COMM_WORLD, ierr);
+    // Define size of temporary vectors and set up temporary vectors
+    MatGetLocalSize(MatShellCtx->A01, &mm, &nn);
     VecCreate(MPI_COMM_WORLD, &MatShellCtx->v_0);
     VecSetSizes(MatShellCtx->v_0, mm, PETSC_DECIDE);
     VecSetUp(MatShellCtx->v_0);
@@ -2500,27 +2122,25 @@ MatrixFreeSchurComplement::MatrixFreeSchurComplement(Mat **K, BlockNestedPC_Inte
     VecDuplicate(MatShellCtx->v_1, &MatShellCtx->v_1_tmp);
 
     // Create the shell matrix for the Schur complement
-    ierr = MatCreateShell(MPI_COMM_WORLD, m, n, PETSC_DECIDE, PETSC_DECIDE, MatShellCtx, &S);
+    MatGetLocalSize(MatShellCtx->A11, &m, &n);
+    MatCreateShell(MPI_COMM_WORLD, m, n, PETSC_DECIDE, PETSC_DECIDE, MatShellCtx, &S);
 };
 
 MatrixFreeSchurComplement::~MatrixFreeSchurComplement()
 {
-    PetscErrorCode ierr;
     // Destroy the vectors within the context
-    ierr = VecDestroy(&MatShellCtx->v_0); 
-    ierr = VecDestroy(&MatShellCtx->v_1);
-    ierr = VecDestroy(&MatShellCtx->v_1_tmp);
+    VecDestroy(&MatShellCtx->v_0); 
+    VecDestroy(&MatShellCtx->v_1);
+    VecDestroy(&MatShellCtx->v_1_tmp);
     // Destroy the shell matrix
-    ierr = MatDestroy(&S); 
+    MatDestroy(&S); 
     // Destroy the Matrices
-    ierr = MatDestroy(&MatShellCtx->A00);
-    ierr = MatDestroy(&MatShellCtx->A01);
-    ierr = MatDestroy(&MatShellCtx->A10);
-    ierr = MatDestroy(&MatShellCtx->A11);
-    // Delete the ASolver instance
-    // delete MatShellCtx->ASolver; // this would delete solver_0 since it is just a pointer t othe same object
+    MatDestroy(&MatShellCtx->A00);
+    MatDestroy(&MatShellCtx->A01);
+    MatDestroy(&MatShellCtx->A10);
+    MatDestroy(&MatShellCtx->A11);
     // Free the context
-    ierr = PetscFree(MatShellCtx); PetscCallAbort(MPI_COMM_WORLD, ierr);
+    PetscFree(MatShellCtx);
 };
 
 // Method to set the Schur complement operation
@@ -2531,67 +2151,31 @@ PetscErrorCode MatrixFreeSchurComplement::ApplySchurComplement()
     PetscFunctionReturn(PETSC_SUCCESS);
 };
 
-// Wrapper function to set the Schur complement procedure
-/* PetscErrorCode SchurComplMultWrapper(Mat mat, Vec x, Vec y, void *ctx)
-{
-    // Cast the 'ctx' to the correct type (MatrixFreeSchurComplement*)
-    MatrixFreeSchurComplement *self = static_cast<MatrixFreeSchurComplement *>(ctx);
-
-    // Now you can call the member function, passing the instance (self) as 'this'
-    return self->SchurComplMult(mat, x, y);
-}
-*/
-
-// Custom matrix-vector multiplication function for Schur complement
+// Matrix-free procedure: Application of the Schur complement to a vector
 // y = mat * x
 // mat -> Schur complement matrix (not explicitly defined)
 // x -> input vector ( it is the residual from the GMRES )
 // y -> output vector ( it will form the krylov subspace in the GMRES )
 PetscErrorCode MatrixFreeSchurComplement::SchurComplMult(Mat mat, Vec x, Vec y)
 {
-    //Vec a11xp, a01xp, a00inv_a01xp, a01xp_temp;
-    PetscReal norm_x, norm_y, norm_schur;
     ShellMatrixContext *ctx;
 
     PetscFunctionBeginUser;
 
     PetscCall(MatShellGetContext(mat, &ctx));
 
-    // Temporary vectors initialization
-    /*PetscCall(VecDuplicate(ctx->v_1, &a11xp));
-    PetscCall(VecDuplicate(ctx->v_0, &a01xp));
-    PetscCall(VecDuplicate(ctx->v_0, &a00inv_a01xp));
-    PetscCall(VecDuplicate(ctx->v_1, &a01xp_temp));*/
-
     // Krylov subspace: S * x
-    // A11 * x
     PetscCall(MatMult(ctx->A11, x, ctx->v_1));
-
-    // A01 * x
     PetscCall(MatMult(ctx->A01, x, ctx->v_0));
 
     // A00^{-1} * (A01 * x)
     ctx->ASolver->Solve(ctx->v_0, ctx->v_0, PETSC_FALSE);
 
-    PetscCall(VecNorm(ctx->v_0, NORM_2, &norm_schur));
     // (A10 * A00^{-1} * A01) * x
     PetscCall(MatMult(ctx->A10, ctx->v_0, ctx->v_1_tmp));
 
-    // y = ( A11 - A10 * A00^{-1} * A01 ) * x
+    // y = ( A11 - A10 * A00^{-1} * A01 ) * x = S * x
     PetscCall(VecWAXPY(y, -1.0, ctx->v_1_tmp, ctx->v_1));
-
-    // Debugging: Compute and print norms
-    PetscCall(VecNorm(x, NORM_2, &norm_x));
-    PetscCall(VecNorm(y, NORM_2, &norm_y));
-
-    //PetscPrintf(MPI_COMM_WORLD, "||x|| = %g, ||S*x|| = %g, ||A00^{-1} A01 x|| = %g\n",
-    //            norm_x, norm_y, norm_schur);
-
-    // Destroy the vectors
-    /*PetscCall(VecDestroy(&a11xp));
-    PetscCall(VecDestroy(&a01xp));
-    PetscCall(VecDestroy(&a00inv_a01xp));
-    PetscCall(VecDestroy(&a01xp_temp));*/
 
     PetscFunctionReturn(PETSC_SUCCESS);
 };
