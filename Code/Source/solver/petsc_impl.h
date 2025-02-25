@@ -190,35 +190,169 @@ a matrix-free algorithm.
 */
 // --------------------------------------------------------------
 
-class BlockNestedPC_InternalLinearSolver 
+// class BlockNestedPC_InternalLinearSolver 
+// {
+//   public:
+//     KSP ksp;
+
+//     // Construct KSP with input tolerances and maximum iteration with prefix
+//     BlockNestedPC_InternalLinearSolver( const double &in_rtol, const double &in_atol,
+//         const double &in_dtol, const int &in_maxits,
+//         const char * const &ksp_prefix, const char * const &pc_prefix);
+
+//     // Destructor 
+//     ~BlockNestedPC_InternalLinearSolver();
+
+//     // Assign a matrix A to the linear solver object and a matrix P for 
+//     // the preconditioner if different from K
+//     PetscErrorCode SetOperator(const Mat &A) {PetscCall(KSPSetOperators(ksp, A, A));}
+//     PetscErrorCode SetOperator(const Mat &A, const Mat &P) {PetscCall(KSPSetOperators(ksp, A, P));}
+
+//     // Solve a linear problem A x = b
+//     PetscErrorCode Solve( const Vec &G, Vec &out_sol, const bool &isPrint=true );
+
+//     // Get the preconditioner context from the solver ksp
+//     PetscErrorCode GetPC( PC *prec ) const {PetscCall(KSPGetPC(ksp, prec));}
+
+//     // Get the iteration number
+//     int get_ksp_it_num() const
+//     {int it_num; KSPGetIterationNumber(ksp, &it_num); return it_num;}
+
+//     // Get maximum iteration number for this linear solver
+//     int get_ksp_maxits() const
+//     { 
+//       int mits; 
+//       KSPGetTolerances(ksp, PETSC_NULL, PETSC_NULL, PETSC_NULL, &mits);
+//       return mits;
+//     }
+
+//     // Print the ksp info on screen
+//     void print_info() const
+//     {
+//       PetscPrintf(MPI_COMM_WORLD, " --------------------------------------\n");
+//       KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD);
+//       PetscPrintf(MPI_COMM_WORLD, " --------------------------------------\n");  
+//     }
+
+//     //  Monitor the Krylov subspace method behavior
+//     void Monitor() const;
+
+//   private: 
+//     // relative, absolute, divergence tolerance
+//     const PetscReal rtol, atol, dtol;
+//     // maximum number of iterations 
+//     const PetscInt maxits;
+// };
+
+
+// typedef struct 
+// {    
+//     Mat A00, A01, A10, A11;                        // Matrices involved in the operation
+//     Vec v_0, v_1, v_1_tmp;                         // Temporary vectors
+//     BlockNestedPC_InternalLinearSolver *ASolver;   // Solver object for internal operations
+    
+// } ShellMatrixContext;
+
+// class BlockNestedPreconditioner
+// {
+//   public:
+//     // --------------------------------------------------------------
+//     // Input the relative tolerance for the _0 and the _1 linear solvers
+//     // _0 is associated with the A_00 matrix
+//     // _1 is associated with the Schur complement (matrix-free algorithm).
+//     // --------------------------------------------------------------
+//     BlockNestedPreconditioner( const PetscReal rtol0, 
+//         const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
+//         const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+//         const PetscInt maxit1);
+
+//     // Destructor
+//     ~BlockNestedPreconditioner();
+
+//     // Application function for the block nested preconditioner to be used 
+//     // by the FGMRES solver
+//     PetscErrorCode BlockNestedPC_Apply(PC pc, Vec r, Vec z);
+
+//     // Set the stifness matrix to be split into submatrices
+//     PetscErrorCode BlockNestedPC_SetMatrix( Mat A );
+
+//     PetscErrorCode SetApproximateSchur(Mat **A);
+
+//   private:
+  
+//     Mat **subA;                           /* submatrices */
+//     Vec *subR;                            /* subvectors for the residual */     
+//     Vec *subZ;                            /* subvectors for the Krylov member of FGMRES */
+//     Mat Ps;                               /* Approximate Schur complement matrix */
+//     PetscInt local_size_v, local_size_p ; /* Size of the index sets */
+
+//     BlockNestedPC_InternalLinearSolver * solver_0; /* explicit solver for A00 */
+
+//     BlockNestedPC_InternalLinearSolver * solver_1; /* matrix-free solver for Schur complement */
+// };
+
+// class MatrixFreeSchurComplement 
+// {
+//   public:
+//     // Constructor: initialize the matshell context 
+//     MatrixFreeSchurComplement(Mat **K, BlockNestedPC_InternalLinearSolver* solver_0);
+
+//     // Destructor
+//     ~MatrixFreeSchurComplement();
+
+//     // Get Schur matrix
+//     Mat GetSchurMatrix() const {return S;}
+
+//     // Static method to handle the Schur complement multiplication
+//     static PetscErrorCode SchurComplMult(Mat mat, Vec x, Vec y);
+    
+//     PetscErrorCode ApplySchurComplement();
+
+//   private:
+//     Mat S;
+//     // Context for the shell matrix
+//     ShellMatrixContext *MatShellCtx; 
+// };
+
+//----------
+// PC_LSCtx
+//----------
+/* 
+  General class for the linear solvers used internally by custom 
+  block iterative PC:
+  - creates a ksp context, sets the tolerances, create ksp prefix
+    for options
+  - set operators for the solver: LHS matrix (A) and PC matrix (P)
+  - solve the linear system
+  - get the preconditioner context
+  - debugging and info tools for linear solver
+*/
+class PC_LSCtx
 {
   public:
     KSP ksp;
 
-    // Construct KSP with input tolerances and maximum iteration with prefix
-    BlockNestedPC_InternalLinearSolver( const double &in_rtol, const double &in_atol,
+    PC_LSCtx( const double &in_rtol, const double &in_atol,
         const double &in_dtol, const int &in_maxits,
         const char * const &ksp_prefix, const char * const &pc_prefix);
 
-    // Destructor 
-    ~BlockNestedPC_InternalLinearSolver();
+    ~PC_LSCtx();
 
-    // Assign a matrix A to the linear solver object and a matrix P for 
-    // the preconditioner if different from K
     PetscErrorCode SetOperator(const Mat &A) {PetscCall(KSPSetOperators(ksp, A, A));}
     PetscErrorCode SetOperator(const Mat &A, const Mat &P) {PetscCall(KSPSetOperators(ksp, A, P));}
 
-    // Solve a linear problem A x = b
-    PetscErrorCode Solve( const Vec &G, Vec &out_sol, const bool &isPrint=true );
+    PetscErrorCode Solve( const Vec &in_R, Vec &out_Sol, const bool &isPrint=true );
 
-    // Get the preconditioner context from the solver ksp
     PetscErrorCode GetPC( PC *prec ) const {PetscCall(KSPGetPC(ksp, prec));}
 
-    // Get the iteration number
+    /* 
+    -------------------------------------------------
+      Debugging and Info tools 
+    -------------------------------------------------
+    */
     int get_ksp_it_num() const
     {int it_num; KSPGetIterationNumber(ksp, &it_num); return it_num;}
 
-    // Get maximum iteration number for this linear solver
     int get_ksp_maxits() const
     { 
       int mits; 
@@ -226,7 +360,6 @@ class BlockNestedPC_InternalLinearSolver
       return mits;
     }
 
-    // Print the ksp info on screen
     void print_info() const
     {
       PetscPrintf(MPI_COMM_WORLD, " --------------------------------------\n");
@@ -234,85 +367,50 @@ class BlockNestedPC_InternalLinearSolver
       PetscPrintf(MPI_COMM_WORLD, " --------------------------------------\n");  
     }
 
-    //  Monitor the Krylov subspace method behavior
     void Monitor() const;
 
   private: 
-    // relative, absolute, divergence tolerance
     const PetscReal rtol, atol, dtol;
-    // maximum number of iterations 
     const PetscInt maxits;
 };
 
-
-typedef struct 
-{    
-    Mat A00, A01, A10, A11;                        // Matrices involved in the operation
-    Vec v_0, v_1, v_1_tmp;                         // Temporary vectors
-    BlockNestedPC_InternalLinearSolver *ASolver;   // Solver object for internal operations
-    
-} ShellMatrixContext;
-
-class BlockNestedPreconditioner
+//----------
+// PC_SCRCtx
+//----------
+/*
+  This class defines the context for the Schur Complement Reduction PC:
+  _0 is associated with the A_00 matrix
+  _1 is associated with the Schur complement matrix
+*/
+class PC_SCRCtx
 {
   public:
-    // --------------------------------------------------------------
-    // Input the relative tolerance for the _0 and the _1 linear solvers
-    // _0 is associated with the A_00 matrix
-    // _1 is associated with the Schur complement (matrix-free algorithm).
-    // --------------------------------------------------------------
-    BlockNestedPreconditioner( const PetscReal rtol0, 
-        const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
-        const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
-        const PetscInt maxit1);
+    PC_SCRCtx( LSCtx *in_lsctx,
+      const PetscReal rtol0, const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
+      const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, const PetscInt maxit1);
 
-    // Destructor
-    ~BlockNestedPreconditioner();
-
-    // Application function for the block nested preconditioner to be used 
-    // by the FGMRES solver
-    PetscErrorCode BlockNestedPC_Apply(PC pc, Vec r, Vec z);
-
-    // Set the stifness matrix to be split into submatrices
-    PetscErrorCode BlockNestedPC_SetMatrix( Mat A );
+    ~PC_SCRCtx();
 
     PetscErrorCode SetApproximateSchur(Mat **A);
 
-  private:
+  //private:
   
     Mat **subA;                           /* submatrices */
     Vec *subR;                            /* subvectors for the residual */     
     Vec *subZ;                            /* subvectors for the Krylov member of FGMRES */
     Mat Ps;                               /* Approximate Schur complement matrix */
+    Mat S;                                /* Schur complement matrix (matrix-free procedure)*/
+    Vec v_0, v_1, v_1_tmp;                /* Temporary vectors */
     PetscInt local_size_v, local_size_p ; /* Size of the index sets */
 
-    BlockNestedPC_InternalLinearSolver * solver_0; /* explicit solver for A00 */
-
-    BlockNestedPC_InternalLinearSolver * solver_1; /* matrix-free solver for Schur complement */
+    LSCtx *ls_ctx;      /* Linear solver context */
+    PC_LSCtx *solver_0; /* explicit solver for A00 */
+    PC_LSCtx *solver_1; /* matrix-free solver for Schur complement */
 };
 
-class MatrixFreeSchurComplement 
-{
-  public:
-    // Constructor: initialize the matshell context 
-    MatrixFreeSchurComplement(Mat **K, BlockNestedPC_InternalLinearSolver* solver_0);
-
-    // Destructor
-    ~MatrixFreeSchurComplement();
-
-    // Get Schur matrix
-    Mat GetSchurMatrix() const {return S;}
-
-    // Static method to handle the Schur complement multiplication
-    static PetscErrorCode SchurComplMult(Mat mat, Vec x, Vec y);
-    
-    PetscErrorCode ApplySchurComplement();
-
-  private:
-    Mat S;
-    // Context for the shell matrix
-    ShellMatrixContext *MatShellCtx; 
-};
+PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z);
+PetscErrorCode SCR_PCSetUp(PC pc);
+PetscErrorCode SCR_MATApply(Mat mat, Vec x, Vec y);
 
 PetscErrorCode MatCreatePreallocator(PetscInt m, PetscInt n, Mat *A);
 
