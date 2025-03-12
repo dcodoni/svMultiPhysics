@@ -100,6 +100,7 @@ typedef struct {
     KSP       ksp;      /* linear solver context */
 
     PetscBool bnpc;     /* whether a block iterative preconditioner is used */
+    PetscBool simple;   /* whether a Simple preconditioner is used */
     PetscBool rcs;      /* whether rcs preconditioner is activated */
     Vec       Dr;       /* diagonal matrix from row maxabs */
     Vec       Dc;       /* diagonal matrix from col maxabs */
@@ -369,6 +370,8 @@ class PC_LSCtx
 
     void Monitor() const;
 
+    void get_ksp_estimate_condition() const;
+
   private: 
     const PetscReal rtol, atol, dtol;
     const PetscInt maxits;
@@ -385,16 +388,15 @@ class PC_LSCtx
 class PC_SCRCtx
 {
   public:
-    PC_SCRCtx( LSCtx *in_lsctx,
-      const PetscReal rtol0, const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
+    PC_SCRCtx( const PetscReal rtol0, const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
       const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, const PetscInt maxit1);
 
     ~PC_SCRCtx();
 
-    PetscErrorCode SetApproximateSchur(Mat **A);
+    PetscErrorCode SetApproximateSchur(Mat **K);
+    PetscErrorCode SetMatrix(Mat K);
 
   //private:
-  
     Mat **subA;                           /* submatrices */
     Vec *subR;                            /* subvectors for the residual */     
     Vec *subZ;                            /* subvectors for the Krylov member of FGMRES */
@@ -403,12 +405,14 @@ class PC_SCRCtx
     Vec v_0, v_1, v_1_tmp;                /* Temporary vectors */
     PetscInt local_size_v, local_size_p ; /* Size of the index sets */
 
-    LSCtx *ls_ctx;      /* Linear solver context */
+    PC pc_0, pc_1;                        /* Preconditioners for the linear solvers */
+    
     PC_LSCtx *solver_0; /* explicit solver for A00 */
     PC_LSCtx *solver_1; /* matrix-free solver for Schur complement */
 };
 
 PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z);
+PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z);
 PetscErrorCode SCR_PCSetUp(PC pc);
 PetscErrorCode SCR_MATApply(Mat mat, Vec x, Vec y);
 
