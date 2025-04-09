@@ -2064,6 +2064,9 @@ void read_ls(Simulation* simulation, EquationParameters* eq_params, consts::Solv
   auto& linear_solver = eq_params->linear_solver;
 
   lEq.ls.mItr = linear_solver.max_iterations.value();
+  lEq.ls.relTol = linear_solver.tolerance.value(); 
+  lEq.ls.absTol = linear_solver.absolute_tolerance.value();
+  
   lEq.FSILS.RI.mItr = lEq.ls.mItr;
 
   if (linear_solver.tolerance.defined()) {
@@ -2092,6 +2095,17 @@ void read_ls(Simulation* simulation, EquationParameters* eq_params, consts::Solv
 
     lEq.FSILS.GM.sD = lEq.FSILS.RI.sD;
   } 
+
+  if ( prec_type == PreconditionerType::PREC_PETSC_SIMPLE || prec_type == PreconditionerType::PREC_PETSC_SCR) {
+    lEq.ls.pc_params.mItr_0 = linear_solver.inner_solver_0_max_iterations.value();
+    lEq.ls.pc_params.relTol_0 = linear_solver.inner_solver_0_tolerance.value();
+    lEq.ls.pc_params.absTol_0 = linear_solver.inner_solver_0_abs_tolerance.value();
+    lEq.ls.pc_params.prec_0 = linear_solver.inner_solver_0_pc.value();
+    lEq.ls.pc_params.mItr_1 = linear_solver.inner_solver_1_max_iterations.value();
+    lEq.ls.pc_params.relTol_1 = linear_solver.inner_solver_1_tolerance.value();
+    lEq.ls.pc_params.absTol_1 = linear_solver.inner_solver_1_abs_tolerance.value();
+    lEq.ls.pc_params.prec_1 = linear_solver.inner_solver_1_pc.value();
+  }
 
   #ifdef debug_read_ls
   dmsg << "Done " << " ";

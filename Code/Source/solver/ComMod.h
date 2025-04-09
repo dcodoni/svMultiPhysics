@@ -658,6 +658,17 @@ class outputType
 
 /// @brief Linear system of equations solver type
 //
+struct BlockIterativePCparams {
+  int mItr_0 = 1000;
+  double relTol_0 = 0.0;
+  double absTol_0 = 1e-08;
+  std::string prec_0;
+  int mItr_1 = 1000;
+  double relTol_1 = 0.0;
+  double absTol_1 = 1e-08;
+  std::string prec_1;
+};
+
 class lsType
 {
   public:
@@ -706,6 +717,9 @@ class lsType
 
     /// @brief Calling duration              (OUT)
     double callD = 0.0;
+
+    /// @brief Block-iterative pc parameters (IN)
+    BlockIterativePCparams pc_params;
 
     //@brief Configuration file for linear solvers (Trilinos, PETSc)
     std::string config;

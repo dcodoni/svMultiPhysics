@@ -71,17 +71,15 @@ void LinearAlgebra::check_solver_pc_linearalgebra_compatibility(const consts::So
 
   // Check that the solver type is compatible with the linear algebra type. 
   //
-  if ((solver_type == SolverType::lSolver_FGMRES) || 
-      (prec_type == PreconditionerType::PREC_PETSC_NESTEDBLOCK) ||
-      (prec_type == PreconditionerType::PREC_PETSC_SIMPLE)){
-    if (lin_alg_type != LinearAlgebraType::petsc) {
-      throw std::runtime_error("[svMultiPhysics] FGMRES solver and the block nested preconditioner require PETSc linear algebra.");
-      }
+  if (solver_type == SolverType::lSolver_FGMRES && lin_alg_type != LinearAlgebraType::petsc) 
+  {
+    // throw std::runtime_error("[svMultiPhysics] FGMRES solver and the block nested preconditioner require PETSc linear algebra.");
   }
 
-  if ((prec_type == PreconditionerType::PREC_PETSC_NESTEDBLOCK || prec_type == PreconditionerType::PREC_PETSC_SIMPLE) &&
-      (solver_type != SolverType::lSolver_FGMRES)) {
-    throw std::runtime_error("[svMultiPhysics] Block nested preconditioner requires FGMRES solver.");
+  if ((prec_type == PreconditionerType::PREC_PETSC_SCR || prec_type == PreconditionerType::PREC_PETSC_SIMPLE) &&
+      (solver_type != SolverType::lSolver_FGMRES)) 
+  {
+    // throw std::runtime_error("[svMultiPhysics] Block nested preconditioner requires FGMRES solver.");
   }
 }
 

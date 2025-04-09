@@ -2527,11 +2527,21 @@ LinearSolverParameters::LinearSolverParameters()
 
   set_parameter("Max_iterations", 1000, !required, max_iterations);
 
+  // Parameters for the BIPN solver.
   set_parameter("NS_CG_max_iterations", 1000, !required, ns_cg_max_iterations);
   set_parameter("NS_CG_tolerance", 1.0e-2, !required, ns_cg_tolerance);
   set_parameter("NS_GM_max_iterations", 1000, !required, ns_gm_max_iterations);
   set_parameter("NS_GM_tolerance", 1.0e-2, !required, ns_gm_tolerance);
 
+  // Parameters for the block-iterative preconditioners.
+  set_parameter("IS_0_max_iterations", 1000, !required, inner_solver_0_max_iterations);
+  set_parameter("IS_0_tolerance", 1.0e-5, !required, inner_solver_0_tolerance);
+  set_parameter("IS_0_abs_tolerance", 1.0e-5, !required, inner_solver_0_abs_tolerance);
+  set_parameter("IS_0_pc", "default", !required, inner_solver_0_pc);
+  set_parameter("IS_1_max_iterations", 1000, !required, inner_solver_1_max_iterations);
+  set_parameter("IS_1_tolerance", 1.0e-5, !required, inner_solver_1_tolerance);
+  set_parameter("IS_1_abs_tolerance", 1.0e-5, !required, inner_solver_1_abs_tolerance);
+  set_parameter("IS_1_pc", "default", !required, inner_solver_1_pc);
   //set_parameter("Preconditioner", "", !required, preconditioner);
 
   set_parameter("Tolerance", 0.5, !required, tolerance);

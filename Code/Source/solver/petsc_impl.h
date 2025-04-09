@@ -76,15 +76,17 @@ typedef struct {
     PetscInt  DirPts;   /* number of dofs with Dirichlet BC */
     PetscInt *DirBC;    /* PETSc index for dofs with Dirichlet BC */
 
-    /* _0 refer to velocity dofs when block iterative procedure is used 
-       _1 refer to pressure dof when block iterative procedure is used 
+    /* _0 refer to velocity dofs when block-iterative procedure is used 
+       _1 refer to pressure dof when block-iterative procedure is used 
     */
     PetscInt  lpPts_0;
     PetscInt *lpBC_l_0;
     PetscInt *lpBC_g_0;
+    PetscReal *svFSI_lpBC_0;    /* svFSI lumped parameter BC for the velocity dofs */
     PetscInt  lpPts_1;
     PetscInt *lpBC_l_1;
     PetscInt *lpBC_g_1;
+    PetscReal *svFSI_lpBC_1;    /* svFSI lumped parameter BC for the pressure dof */
 
     PetscInt  DirPts_0;   
     PetscInt *DirBC_0;    
@@ -99,8 +101,7 @@ typedef struct {
     Mat       A_mn[4];  /* stiffness submatrices */
     KSP       ksp;      /* linear solver context */
 
-    PetscBool bnpc;     /* whether a block iterative preconditioner is used */
-    PetscBool simple;   /* whether a Simple preconditioner is used */
+    PetscBool block_iterative_pc; /* whether a block-iterative preconditioner is used */
     PetscBool rcs;      /* whether rcs preconditioner is activated */
     Vec       Dr;       /* diagonal matrix from row maxabs */
     Vec       Dc;       /* diagonal matrix from col maxabs */
@@ -153,7 +154,7 @@ PetscErrorCode petsc_set_splitmat(const PetscInt, const PetscInt, const PetscRea
 
 PetscErrorCode petsc_set_bc(const PetscInt, const PetscReal *, const PetscReal *);
 
-PetscErrorCode petsc_set_splitbc(const PetscInt, const PetscReal *, const PetscReal *);
+PetscErrorCode petsc_set_splitbc(const PetscInt);
 
 PetscErrorCode petsc_set_pcfieldsplit(const PetscInt, const PetscInt);
 
@@ -163,164 +164,12 @@ PetscErrorCode petsc_pc_rcs(const PetscInt, const PetscInt);
 PetscErrorCode petsc_debug_save_vec(const char *, Vec);
 PetscErrorCode petsc_debug_save_mat(const char *, Mat);
 
-//---------------------------------------------------------------
-// BLOCK NESTED PRECONDITIONER 
-// --------------------------------------------------------------
-/* Iterative solution method with the nested block preconditioning
-Linear system is: A * x = r with the following block structure:
-A = [ A_00, A_01   [ xu    = [ r_0
-      A_10, A_11 ]   xp ]      r_1 ]
-The method involves the FGMRES with a varying preconditioner PC
-for each iteration. The procedure involves three steps:
-1.  Outer solver: FGMRES that generates a Krylov subspace by applying
-    A * PC^{-1} to a vector.
-2.  Intermediate solver: Gives the application of the PC^{-1} to a
-    vector.
-3.  Inner solver: Matrix-free algorithm for the application of the
-    Schur complement to a vector.
-DOI: https://doi.org/10.1016/j.cma.2020.113122 
-*/
-// --------------------------------------------------------------
-/* Notes:
-Intermediate solver:
-S xp = r_1 - A_10 inv(A_00) r_0
-A_00 xu = r_0 - A_01 xp
-wherein S := A_11 - A_10 inv(A_00) A_01 is the Schur complement,
-not explicitly formed but solved by in the inner solver with a 
-a matrix-free algorithm. 
-*/
-// --------------------------------------------------------------
-
-// class BlockNestedPC_InternalLinearSolver 
-// {
-//   public:
-//     KSP ksp;
-
-//     // Construct KSP with input tolerances and maximum iteration with prefix
-//     BlockNestedPC_InternalLinearSolver( const double &in_rtol, const double &in_atol,
-//         const double &in_dtol, const int &in_maxits,
-//         const char * const &ksp_prefix, const char * const &pc_prefix);
-
-//     // Destructor 
-//     ~BlockNestedPC_InternalLinearSolver();
-
-//     // Assign a matrix A to the linear solver object and a matrix P for 
-//     // the preconditioner if different from K
-//     PetscErrorCode SetOperator(const Mat &A) {PetscCall(KSPSetOperators(ksp, A, A));}
-//     PetscErrorCode SetOperator(const Mat &A, const Mat &P) {PetscCall(KSPSetOperators(ksp, A, P));}
-
-//     // Solve a linear problem A x = b
-//     PetscErrorCode Solve( const Vec &G, Vec &out_sol, const bool &isPrint=true );
-
-//     // Get the preconditioner context from the solver ksp
-//     PetscErrorCode GetPC( PC *prec ) const {PetscCall(KSPGetPC(ksp, prec));}
-
-//     // Get the iteration number
-//     int get_ksp_it_num() const
-//     {int it_num; KSPGetIterationNumber(ksp, &it_num); return it_num;}
-
-//     // Get maximum iteration number for this linear solver
-//     int get_ksp_maxits() const
-//     { 
-//       int mits; 
-//       KSPGetTolerances(ksp, PETSC_NULL, PETSC_NULL, PETSC_NULL, &mits);
-//       return mits;
-//     }
-
-//     // Print the ksp info on screen
-//     void print_info() const
-//     {
-//       PetscPrintf(MPI_COMM_WORLD, " --------------------------------------\n");
-//       KSPView(ksp, PETSC_VIEWER_STDOUT_WORLD);
-//       PetscPrintf(MPI_COMM_WORLD, " --------------------------------------\n");  
-//     }
-
-//     //  Monitor the Krylov subspace method behavior
-//     void Monitor() const;
-
-//   private: 
-//     // relative, absolute, divergence tolerance
-//     const PetscReal rtol, atol, dtol;
-//     // maximum number of iterations 
-//     const PetscInt maxits;
-// };
-
-
-// typedef struct 
-// {    
-//     Mat A00, A01, A10, A11;                        // Matrices involved in the operation
-//     Vec v_0, v_1, v_1_tmp;                         // Temporary vectors
-//     BlockNestedPC_InternalLinearSolver *ASolver;   // Solver object for internal operations
-    
-// } ShellMatrixContext;
-
-// class BlockNestedPreconditioner
-// {
-//   public:
-//     // --------------------------------------------------------------
-//     // Input the relative tolerance for the _0 and the _1 linear solvers
-//     // _0 is associated with the A_00 matrix
-//     // _1 is associated with the Schur complement (matrix-free algorithm).
-//     // --------------------------------------------------------------
-//     BlockNestedPreconditioner( const PetscReal rtol0, 
-//         const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
-//         const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
-//         const PetscInt maxit1);
-
-//     // Destructor
-//     ~BlockNestedPreconditioner();
-
-//     // Application function for the block nested preconditioner to be used 
-//     // by the FGMRES solver
-//     PetscErrorCode BlockNestedPC_Apply(PC pc, Vec r, Vec z);
-
-//     // Set the stifness matrix to be split into submatrices
-//     PetscErrorCode BlockNestedPC_SetMatrix( Mat A );
-
-//     PetscErrorCode SetApproximateSchur(Mat **A);
-
-//   private:
-  
-//     Mat **subA;                           /* submatrices */
-//     Vec *subR;                            /* subvectors for the residual */     
-//     Vec *subZ;                            /* subvectors for the Krylov member of FGMRES */
-//     Mat Ps;                               /* Approximate Schur complement matrix */
-//     PetscInt local_size_v, local_size_p ; /* Size of the index sets */
-
-//     BlockNestedPC_InternalLinearSolver * solver_0; /* explicit solver for A00 */
-
-//     BlockNestedPC_InternalLinearSolver * solver_1; /* matrix-free solver for Schur complement */
-// };
-
-// class MatrixFreeSchurComplement 
-// {
-//   public:
-//     // Constructor: initialize the matshell context 
-//     MatrixFreeSchurComplement(Mat **K, BlockNestedPC_InternalLinearSolver* solver_0);
-
-//     // Destructor
-//     ~MatrixFreeSchurComplement();
-
-//     // Get Schur matrix
-//     Mat GetSchurMatrix() const {return S;}
-
-//     // Static method to handle the Schur complement multiplication
-//     static PetscErrorCode SchurComplMult(Mat mat, Vec x, Vec y);
-    
-//     PetscErrorCode ApplySchurComplement();
-
-//   private:
-//     Mat S;
-//     // Context for the shell matrix
-//     ShellMatrixContext *MatShellCtx; 
-// };
-
 //----------
 // PC_LSCtx
 //----------
 /* 
   General class for the linear solvers used internally by custom 
-  block iterative PC:
+  block-iterative PC:
   - creates a ksp context, sets the tolerances, create ksp prefix
     for options
   - set operators for the solver: LHS matrix (A) and PC matrix (P)
@@ -347,9 +196,7 @@ class PC_LSCtx
     PetscErrorCode GetPC( PC *prec ) const {PetscCall(KSPGetPC(ksp, prec));}
 
     /* 
-    -------------------------------------------------
       Debugging and Info tools 
-    -------------------------------------------------
     */
     int get_ksp_it_num() const
     {int it_num; KSPGetIterationNumber(ksp, &it_num); return it_num;}
@@ -377,44 +224,307 @@ class PC_LSCtx
     const PetscInt maxits;
 };
 
-//----------
-// PC_SCRCtx
-//----------
+//------------------
+// BlockIterative_PC
+//------------------
 /*
-  This class defines the context for the Schur Complement Reduction PC:
-  _0 is associated with the A_00 matrix
-  _1 is associated with the Schur complement matrix
+  Block-iterative preconditioners are based on the following  
+  factorization of the matrix A (LHS of the system):
+  L * D * U = A = | A, B |
+                  | C, D |
+
+  | I,        0 | * | A, 0 | * | I, A^{-1}*B | = A
+  | C*A^{-1}, I |   | 0, S |   | 0, I        |
 */
-class PC_SCRCtx
+
+/* 
+  Abstract base class for block-iterative preconditioners, ensuring that 
+  all derived classes implement the necessary methods
+*/
+class BlockIterative_Preconditioner 
 {
+  private:
+      Mat A;                   /* System matrix (LHS) defined as MATNEST */
+      Mat **subA;              /* Submatrices of the system matrix */
+      PetscInt size_0, size_1; /* Local sizes of _0 and _1 systems */
+      PC pc;                   /* Blokc-iterative preconditioner object */
+  
   public:
-    PC_SCRCtx( const PetscReal rtol0, const PetscReal atol0, const PetscReal dtol0, const PetscInt maxit0,
-      const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, const PetscInt maxit1);
-
-    ~PC_SCRCtx();
-
-    PetscErrorCode SetApproximateSchur(Mat **K);
-    PetscErrorCode SetMatrix(Mat K);
-
-  //private:
-    Mat **subA;                           /* submatrices */
-    Vec *subR;                            /* subvectors for the residual */     
-    Vec *subZ;                            /* subvectors for the Krylov member of FGMRES */
-    Mat Ps;                               /* Approximate Schur complement matrix */
-    Mat S;                                /* Schur complement matrix (matrix-free procedure)*/
-    Vec v_0, v_1, v_1_tmp;                /* Temporary vectors */
-    PetscInt local_size_v, local_size_p ; /* Size of the index sets */
-
-    PC pc_0, pc_1;                        /* Preconditioners for the linear solvers */
+    BlockIterative_Preconditioner(PC pc_) : pc(pc_), A(NULL) {}
+    virtual ~BlockIterative_Preconditioner() {}
+  
+    /* 
+      Set the type of PC, attach a context to PC and set the 
+      application function which defines the PC itself
+    */
+    void CreatePC() {
+      PCSetType(pc, PCSHELL);
+      PCShellSetContext(pc, this);
+      PCShellSetApply(pc, applyPC);
+    }
+    /*
+      Initialize the internal solvers for the block-iterative PC
+    */
+    void initialize_solvers(const PetscReal rtol0, const PetscReal atol0, 
+      const PetscReal dtol0, const PetscInt maxit0, std::string prec_0,
+      const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+      const PetscInt maxit1, std::string prec_1)
+    {
+      initialize(rtol0, atol0, dtol0, maxit0, prec_0, 
+        rtol1, atol1, dtol1, maxit1, prec_1);
+    }
+    /*
+      Set the matrix for the block-iterative PC.
+      Anything specific to a particular PC (SCR, SIMPLE, ...) is
+      also set here.
+    */
+    void setMatrix(Mat A_) 
+    {
+      A = A_;
+      MatNestGetSubMats(A, NULL, NULL, &subA);
+      MatGetLocalSize(subA[0][1], &size_0, &size_1);
+      setup();
+    }
     
-    PC_LSCtx *solver_0; /* explicit solver for A00 */
-    PC_LSCtx *solver_1; /* matrix-free solver for Schur complement */
+    Mat getMatrix() { return A; }
+
+    Mat** getSubMatrix() { return subA; }
+
+    PetscInt GetSize(PetscInt s_) 
+    { 
+      if (s_ == 0) return size_0;
+      else return size_1;
+    }
+
+    /*
+      The function applyPC is a static member function that calls
+      another function apply() which is defined differently for each
+      type of PC
+    */
+    static PetscErrorCode applyPC(PC pc, Vec x, Vec y) {
+      void *ctx;
+      PCShellGetContext(pc, &ctx);
+      auto *blockPC = static_cast<BlockIterative_Preconditioner *>(ctx);
+      return blockPC->apply(pc, x, y);
+    }
+
+    /*
+        Set the type of the preconditioner for the internal solvers
+      */
+     PetscErrorCode set_internal_pc_type(PC_LSCtx *internal_solver, PC pc_internal, std::string pc_type);
+
+    /*
+      Virtual function that must be implemented by derived classes
+      and they are specific for each PC type
+    */
+    virtual void initialize(const PetscReal rtol0, const PetscReal atol0, 
+      const PetscReal dtol0, const PetscInt maxit0, std::string prec_0,
+      const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+      const PetscInt maxit1, std::string prec_1) = 0;
+
+    virtual void setup() = 0;
+
+    virtual PetscErrorCode apply(PC pc, Vec x, Vec y) = 0;
 };
 
-PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z);
-PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z);
-PetscErrorCode SCR_PCSetUp(PC pc);
-PetscErrorCode SCR_MATApply(Mat mat, Vec x, Vec y);
+//-------------------
+// SCR_Preconditioner
+//-------------------
+
+/* Iterative solution method with the nested block preconditioning
+Linear system is: A * x = r with the following block structure:
+A = [ A_00, A_01   [ xu    = [ r_0
+      A_10, A_11 ]   xp ]      r_1 ]
+The method involves the FGMRES with a varying preconditioner PC
+for each iteration. The procedure involves three steps:
+1.  Outer solver: FGMRES that generates a Krylov subspace by applying
+    A * PC^{-1} to a vector.
+2.  Intermediate solver: Gives the application of the PC^{-1} to a
+    vector.
+3.  Inner solver: Matrix-free algorithm for the application of the
+    Schur complement to a vector.
+DOI: https://doi.org/10.1016/j.cma.2020.113122 
+*/
+// --------------------------------------------------------------
+/* Notes:
+Intermediate solver:
+S xp = r_1 - A_10 inv(A_00) r_0
+A_00 xu = r_0 - A_01 xp
+wherein S := A_11 - A_10 inv(A_00) A_01 is the Schur complement,
+not explicitly formed but solved by in the inner solver with a 
+a matrix-free algorithm. 
+*/
+// --------------------------------------------------------------
+
+/* 
+  Derived class for the Schur Complement Reduction (SCR) preconditioner
+*/
+class SCR_Preconditioner : public BlockIterative_Preconditioner 
+{
+  private:
+      Vec *subR;          /* subvectors for the residual */     
+      Vec *subZ;          /* subvectors for the Krylov member of FGMRES */
+      Mat Ps;             /* Approximate Schur complement matrix */
+      Mat S;              /* Schur complement matrix (matrix-free procedure)*/
+      PC_LSCtx *solver_0; /* linear solver for A_00 submatrix */
+      PC_LSCtx *solver_1; /* linear solver for Schur complement */
+      std::string pc_type_0; /* type of preconditioner for solver_0 */
+      std::string pc_type_1; /* type of preconditioner for solver_1 */
+
+  public:
+      SCR_Preconditioner(PC pc) : BlockIterative_Preconditioner(pc) {}
+      
+      ~SCR_Preconditioner() override;
+
+      void initialize_internal_solver(const PetscReal rtol0, const PetscReal atol0, 
+        const PetscReal dtol0, const PetscInt maxit0, std::string prec_0,
+        const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+        const PetscInt maxit1, std::string prec_1)
+      {
+        solver_0 = new PC_LSCtx(rtol0, atol0, dtol0, maxit0, "ls0_", "pc0_");
+        solver_1 = new PC_LSCtx(rtol1, atol1, dtol1, maxit1, "ls1_", "pc1_");
+
+        pc_type_0 = prec_0;
+        pc_type_1 = prec_1;
+      }
+      
+      /* 
+        Implements the logic of the SCR preconditioner 
+      */
+      PetscErrorCode SCR_PCApply(PC pc, Vec x, Vec y);
+    
+      /* 
+        Compute the approximate Schur complement using the diag(A_00) 
+         and saves it in Ps
+      */
+      PetscErrorCode SetApproximateSchur();
+
+      /*
+        Implements the application of the Schur complement to a vector
+      */
+      static PetscErrorCode SCR_SchurApply(Mat mat, Vec x, Vec y);
+
+      void initialize(const PetscReal rtol0, const PetscReal atol0, 
+        const PetscReal dtol0, const PetscInt maxit0, std::string prec_0,
+        const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+        const PetscInt maxit1, std::string prec_1) override 
+      {
+        this->initialize_internal_solver(rtol0, atol0, dtol0, maxit0, prec_0, 
+          rtol1, atol1, dtol1, maxit1, prec_1);
+      }
+
+      PetscErrorCode apply(PC pc, Vec x, Vec y) override 
+      {
+        this->SCR_PCApply(pc, x, y);
+      }
+
+      void setup() override 
+      {
+        MatCreateShell(MPI_COMM_WORLD, GetSize(1) , GetSize(1), PETSC_DECIDE, PETSC_DECIDE, this, &S);
+        MatShellSetOperation(S, MATOP_MULT, (void (*)(void))SCR_SchurApply);
+        this->SetApproximateSchur();
+      }
+};
+
+//----------------------
+// SIMPLE_Preconditioner
+//----------------------
+/* Iterative solution method with the nested block preconditioning
+Linear system is: A * x = r with the following block structure:
+A = [ A_00, A_01   [ xu    = [ r_0
+      A_10, A_11 ]   xp ]      r_1 ]
+The method involves the FGMRES with a varying preconditioner PC
+for each iteration. The procedure involves three steps:
+1.  Outer solver: FGMRES that generates a Krylov subspace by applying
+    A * PC^{-1} to a vector.
+2.  Intermediate solver: Gives the application of the PC^{-1} to a
+    vector.
+3.  Inner solver: the Schur is approximated by using the inverse of 
+    the diagonal of A_00 and solved with GMRES.
+DOI: https://doi.org/10.1016/j.cma.2020.113122 
+*/
+// --------------------------------------------------------------
+/* Notes:
+Intermediate solver:
+Ps xp = r_1 - A_10 inv(A_00) r_0
+A_00 xu = r_0 - A_00 (diag(A_00))^{-1} A_01 xp
+wherein Ps := A_11 - A_10 (diag(A_00))^{-1} A_01 is the approximation 
+of the Schur complement.
+*/
+// --------------------------------------------------------------
+
+/* 
+  Derived class for the SIMPLE preconditioner
+*/
+class SIMPLE_Preconditioner : public BlockIterative_Preconditioner 
+{
+  private:
+      Vec *subR;          /* subvectors for the residual */     
+      Vec *subZ;          /* subvectors for the Krylov member of FGMRES */
+      Mat Ps;             /* Approximate Schur complement matrix */
+      PC_LSCtx *solver_0; /* linear solver for A_00 submatrix */
+      PC_LSCtx *solver_1; /* linear solver for Schur complement */
+      std::string pc_type_0; /* type of preconditioner for solver_0 */
+      std::string pc_type_1; /* type of preconditioner for solver_1 */
+
+  public:
+      SIMPLE_Preconditioner(PC pc) : BlockIterative_Preconditioner(pc) {}
+      
+      ~SIMPLE_Preconditioner() override;
+
+      void initialize_internal_solver(const PetscReal rtol0, const PetscReal atol0, 
+        const PetscReal dtol0, const PetscInt maxit0, std::string prec_0,
+        const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+        const PetscInt maxit1, std::string prec_1)
+      {
+        solver_0 = new PC_LSCtx(rtol0, atol0, dtol0, maxit0, "ls0_", "pc0_");
+        solver_1 = new PC_LSCtx(rtol1, atol1, dtol1, maxit1, "ls1_", "pc1_");
+
+        pc_type_0 = prec_0;
+        pc_type_1 = prec_1;
+      }
+
+      /* 
+        Implements the logic of the SIMPLE preconditioner 
+      */
+      PetscErrorCode SIMPLE_PCApply(PC pc, Vec x, Vec y);
+
+      /* 
+        Compute the approximate Schur complement using the diag(A_00) 
+         and saves it in Ps
+      */
+      PetscErrorCode SetApproximateSchur();
+
+      void initialize(const PetscReal rtol0, const PetscReal atol0, 
+      const PetscReal dtol0, const PetscInt maxit0, std::string prec_0,
+      const PetscReal rtol1, const PetscReal atol1, const PetscReal dtol1, 
+      const PetscInt maxit1, std::string prec_1) override 
+      {
+        this->initialize_internal_solver(rtol0, atol0, dtol0, maxit0, prec_0, 
+          rtol1, atol1, dtol1, maxit1, prec_1);
+      }
+
+      PetscErrorCode apply(PC pc, Vec x, Vec y) override 
+      {
+        this->SIMPLE_PCApply(pc, x, y);
+      }
+
+      void setup() override 
+      {
+        this->SetApproximateSchur();
+      }
+};
+
+//-------------------------
+// MAP: pc type to function
+//-------------------------
+/*
+  Factory mapping block-iterative preconditioner type to constructor functions
+*/
+std::unordered_map<std::string, std::function<BlockIterative_Preconditioner*(PC)>> block_iterative_pc_map = {
+  {"petsc-scr",    [](PC pc) { return new SCR_Preconditioner(pc); }},
+  {"petsc-simple", [](PC pc) { return new SIMPLE_Preconditioner(pc); }}
+};
 
 PetscErrorCode MatCreatePreallocator(PetscInt m, PetscInt n, Mat *A);
 

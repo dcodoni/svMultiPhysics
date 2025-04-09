@@ -968,6 +968,15 @@ class LinearSolverParameters : public ParameterLists
     Parameter<int> ns_gm_max_iterations; 
     Parameter<double> ns_gm_tolerance;
 
+    Parameter<int> inner_solver_0_max_iterations;
+    Parameter<double> inner_solver_0_tolerance;
+    Parameter<double> inner_solver_0_abs_tolerance;
+    Parameter<std::string> inner_solver_0_pc;
+    Parameter<int> inner_solver_1_max_iterations; 
+    Parameter<double> inner_solver_1_tolerance;
+    Parameter<double> inner_solver_1_abs_tolerance;
+    Parameter<std::string> inner_solver_1_pc;
+    
     //Parameter<std::string> preconditioner;
 
     Parameter<double> tolerance;

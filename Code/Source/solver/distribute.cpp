@@ -1002,6 +1002,15 @@ void dist_eq(ComMod& com_mod, const CmMod& cm_mod, const cmType& cm, const std::
   cm.bcast(cm_mod, &lEq.ls.mItr);
   cm.bcast(cm_mod, &lEq.ls.sD);
 
+  cm.bcast(cm_mod, &lEq.ls.pc_params.mItr_0);
+  cm.bcast(cm_mod, &lEq.ls.pc_params.relTol_0);
+  cm.bcast(cm_mod, &lEq.ls.pc_params.absTol_0);
+  cm.bcast(cm_mod, lEq.ls.pc_params.prec_0);
+  cm.bcast(cm_mod, &lEq.ls.pc_params.mItr_1);
+  cm.bcast(cm_mod, &lEq.ls.pc_params.relTol_1);
+  cm.bcast(cm_mod, &lEq.ls.pc_params.absTol_1);
+  cm.bcast(cm_mod, lEq.ls.pc_params.prec_1);
+
   #ifdef dist_eq
   dmsg << "lEq.phys: " << lEq.phys;
   dmsg << "lEq.ls.relTol: " << lEq.ls.relTol;

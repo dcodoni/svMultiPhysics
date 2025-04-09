@@ -42,6 +42,8 @@
 #include <math.h>
 #include <vector>
 
+#include <fstream> 
+
 // If set then check Array indexes.
 //
 #ifdef ENABLE_ARRAY_INDEX_CHECKING

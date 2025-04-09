@@ -36,6 +36,8 @@
 
 LHSCtx plhs;             /* PETSc lhs */
 LSCtx *psol;             /* PETSc solver */
+BlockIterative_Preconditioner *block_PC = nullptr; /* Block iterative preconditioner */
+
 PetscLogStage stages[6]; /* performance tuning. */
 
 /*
@@ -76,15 +78,6 @@ void petsc_initialize(const PetscInt nNo, const PetscInt mynNo, const PetscInt n
         PetscPrintf(MPI_COMM_WORLD, " <PETSC_INITIALIZE>: "
                                     "use linear solver config. from svFSI input.\n");
     }
-     // Setting options for BoomerAMG
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_cycle_type", "1");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_coarsen_type", "8");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_interp_type", "6");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_relax_type_all", "3");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_truncfactor", "0.3");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_strong_threshold", "0.5");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_P_max", "5");
-     PetscOptionsSetValue(NULL, "-pc_hypre_boomeramg_aggressive_coarsening_levels", "2");
 
     PetscLogStageRegister("Create LHS", &stages[0]);
     PetscLogStageRegister("Create VecMat", &stages[1]);
@@ -124,7 +117,7 @@ void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const Pet
 
     PetscLogStagePush(stages[1]);
 
-    if (psol[cEq].bnpc || psol[cEq].simple)
+    if (psol[cEq].block_iterative_pc)
     {
         petsc_create_splitbc(dof, cEq, svFSI_DirBC, svFSI_lpBC); /* bc info is required for mat_create */
         petsc_create_splitvecmat(dof, cEq, nEq);
@@ -140,7 +133,7 @@ void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const Pet
 /*
     Create PETSc linear solver data.
 */
-void petsc_create_linearsolver(const consts::SolverType lsType, const consts::PreconditionerType pcType,
+void petsc_create_linearsolver(const consts::SolverType lsType, const consts::PreconditionerType pcType, const BlockIterativePCparams pc_params,
                                const PetscInt kSpace, const PetscInt maxIter, const PetscReal relTol, const PetscReal absTol,
                                const consts::EquationType phys, const PetscInt dof, const PetscInt nnz, const PetscInt iEq, const PetscInt nEq)
 {
@@ -235,8 +228,7 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
     }
 
     /* Set preconditioner */
-    psol[cEq].bnpc = PETSC_FALSE;
-    psol[cEq].simple = PETSC_FALSE;
+    psol[cEq].block_iterative_pc = PETSC_FALSE;
     psol[cEq].rcs = PETSC_FALSE;
     KSPGetPC(psol[cEq].ksp, &pc);
 
@@ -246,66 +238,55 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
         PCSetType(pc, PCJACOBI);
     break;
 
-    case PreconditionerType::PREC_PETSC_NESTEDBLOCK: // To be used with FGMRES solver
+    case PreconditionerType::PREC_PETSC_BJACOBI:
+        PCSetType(pc, PCBJACOBI);
+    break;
+
+    case PreconditionerType::PREC_PETSC_AMG:
+        PCSetType(pc, PCHYPRE);
+        PCHYPRESetType(pc, "boomeramg");
+    break;
+
+    case PreconditionerType::PREC_PETSC_SCR: // To be used with FGMRES solver
     {
-        psol[cEq].bnpc = PETSC_TRUE;
-        PCSetType(pc, PCSHELL);
+        psol[cEq].block_iterative_pc = PETSC_TRUE;
 
-        const PetscReal default_rtol0 = 1.0e-13;
-        const PetscReal default_atol0 = 1.0e-13;
-        const PetscReal default_dtol0 = 1.0e50;
-        const PetscInt default_maxit0 = 1000;
-
-        const PetscReal default_rtol1 = 1.0e-13;
-        const PetscReal default_atol1 = 1.0e-13;
-        const PetscReal default_dtol1 = 1.0e50;
-        const PetscInt default_maxit1 = 1000;
-
-        // Create the block nested preconditioner context object
-        PC_SCRCtx *pc_scr_context = new PC_SCRCtx( default_rtol0, default_atol0, default_dtol0, default_maxit0,
-            default_rtol1, default_atol1, default_dtol1, default_maxit1);
-
-        // Attach the context to the PCSHELL
-        PCShellSetContext(pc, pc_scr_context);
-        PCShellSetApply(pc, SCR_PCApply);
-
-        // PCShellSetApply(pc, [](PC pc, Vec r, Vec z) -> PetscErrorCode
-        //                 {
-        //         BlockNestedPreconditioner *ctx;
-        //         PCShellGetContext(pc, &ctx);
-        //         return ctx->BlockNestedPC_Apply(pc, r, z); });
-        // PCShellSetDestroy(pc, [](PC pc) -> PetscErrorCode
-        //                   {
-        //         BlockNestedPreconditioner *ctx;
-        //         PCShellGetContext(pc, &ctx);
-        //         delete ctx;
-        //         return 0; });
+        std::string block_pc_type = consts::preconditioner_type_to_name.at(pcType);
+        
+        auto it = block_iterative_pc_map.find(block_pc_type);
+        
+        if (it != block_iterative_pc_map.end()) {
+            block_PC = it->second(pc);  // Create and store the block preconditioner
+            block_PC->CreatePC();
+            block_PC->initialize_solvers(pc_params.relTol_0, pc_params.absTol_0, 1.0e50, pc_params.mItr_0, 
+                pc_params.prec_0, pc_params.relTol_1, pc_params.absTol_1, 1.0e50, pc_params.mItr_1, pc_params.prec_1);
+        } else {
+            throw std::runtime_error("Error: Unknown block-iterative preconditioner type:" + block_pc_type + ".");
+        }
     }
     break;
 
     case PreconditionerType::PREC_PETSC_SIMPLE: // To be used with FGMRES solver
     {
-        psol[cEq].simple = PETSC_TRUE;
-        PCSetType(pc, PCSHELL);
+        psol[cEq].block_iterative_pc = PETSC_TRUE;
 
-        const PetscReal default_rtol0 = 1.0e-13;
-        const PetscReal default_atol0 = 1.0e-13;
-        const PetscReal default_dtol0 = 1.0e50;
-        const PetscInt default_maxit0 = 1000;
-
-        const PetscReal default_rtol1 = 1.0e-13;
-        const PetscReal default_atol1 = 1.0e-5;
-        const PetscReal default_dtol1 = 1.0e50;
-        const PetscInt default_maxit1 = 1000;
-
-        // Create the block nested preconditioner context object
-        PC_SCRCtx *pc_simple_context = new PC_SCRCtx( default_rtol0, default_atol0, default_dtol0, default_maxit0,
-            default_rtol1, default_atol1, default_dtol1, default_maxit1);
-
-        // Attach the context to the PCSHELL
-        PCShellSetContext(pc, pc_simple_context);
-        PCShellSetApply(pc, SIMPLE_PCApply);
+        std::string block_pc_type = consts::preconditioner_type_to_name.at(pcType);
+        
+        auto it = block_iterative_pc_map.find(block_pc_type);
+        
+        if (it != block_iterative_pc_map.end()) {
+            block_PC = it->second(pc);  // Create and store the block preconditioner
+            block_PC->CreatePC();
+            block_PC->initialize_solvers(pc_params.relTol_0, pc_params.absTol_0, 1.0e50, pc_params.mItr_0, 
+                pc_params.prec_0, pc_params.relTol_1, pc_params.absTol_1, 1.0e50, pc_params.mItr_1, pc_params.prec_1);
+        } else {
+            throw std::runtime_error("Error: Unknown block-iterative preconditioner type:" + block_pc_type + ".");
+        }
     }
+    break;
+
+    case PreconditionerType::PREC_PETSC_SCHUR:
+        PCSetType(pc, PCFIELDSPLIT);
     break;
 
     case PreconditionerType::PREC_PETSC_RCS:
@@ -332,7 +313,7 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
     PetscObjectTypeCompare((PetscObject)pc, PCFIELDSPLIT, &usefieldsplit);
     if (usefieldsplit)
     {
-        if (phys == EquationType::phys_fluid || phys == EquationType::phys_ustruct || phys == EquationType::phys_stokes)
+        if (phys == EquationType::phys_fluid || phys == EquationType::phys_ustruct || phys == EquationType::phys_stokes || phys ==EquationType::phys_FSI)
         {
             petsc_set_pcfieldsplit(dof, cEq);
         }
@@ -362,11 +343,11 @@ void petsc_set_values(const PetscInt dof, const PetscInt iEq, const PetscReal *R
     /* Set values in A &b, apply Dir and Lumped parameter BC */
     PetscLogStagePush(stages[3]);
 
-    if (psol[cEq].bnpc || psol[cEq].simple)
+    if (psol[cEq].block_iterative_pc)
     {
         petsc_set_splitvec(dof, cEq, R);
         petsc_set_splitmat(dof, cEq, Val);
-        petsc_set_splitbc(cEq, svFSI_DirBC, svFSI_lpBC);
+        petsc_set_splitbc(cEq);
     } else
     {
         petsc_set_vec(dof, cEq, R);
@@ -402,6 +383,7 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
     Vec lx, lx_0, lx_1, res;
     KSPConvergedReason reason;
     PetscLogDouble ts, te;
+    PetscBool usefieldsplit;
 
     PetscErrorCode ierr;
 
@@ -412,156 +394,18 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
 
     KSPSetOperators(psol[cEq].ksp, psol[cEq].A, psol[cEq].A);
 
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // PetscViewer viewer;
-
-    // Mat X, SS;
-    // PetscInt m, n;
-    // MatGetLocalSize(psol[cEq].A_mn[0], &m, &n);
-    // ierr = MatDuplicate(psol[cEq].A_mn[1], MAT_DO_NOT_COPY_VALUES, &X);
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatDuplicate: %d\n", ierr);
-    // }
-    // Mat LU;
-    
-    // IS allRows, allCols;
-    // ierr = ISCreateStride(PETSC_COMM_WORLD, m, 0, 1, &allRows);CHKERRQ(ierr);
-    // ierr = ISCreateStride(PETSC_COMM_WORLD, m, 0, 1, &allCols);CHKERRQ(ierr);
-
-    // ierr = MatGetFactor(psol[cEq].A_mn[0], MATSOLVERPETSC, MAT_FACTOR_LU, &LU);
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatGetFactor: %d\n", ierr);
-    // }
-
-    // ierr = MatLUFactorSymbolic(LU, psol[cEq].A_mn[0], allRows, allCols, NULL);
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatLUFactorSymbolic: %d\n", ierr);
-    // }
-    // ierr = MatLUFactorNumeric(LU, psol[cEq].A_mn[0], NULL);
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatLUFactorNumeric: %d\n", ierr);
-    // }
-    // Mat A_inv;
-    // Vec b, x;
-    // PetscInt *rowIndices;
-    // PetscScalar *xArray;
-    // // Create row indices array
-    // rowIndices = (PetscInt*)malloc(m * sizeof(PetscInt));
-    // for (PetscInt i = 0; i < m; ++i) {
-    //     rowIndices[i] = i;  // Assign row indices
-    // }
-    // // CAZZO IN CULOOOOOO PORCO DUE LADRO PUTTANA DI EVA 
-    // ierr = VecCreate(MPI_COMM_WORLD, &x);CHKERRQ(ierr);
-    // ierr = VecSetSizes(x, m, PETSC_DECIDE);CHKERRQ(ierr);
-    // ierr = VecSetFromOptions(x);CHKERRQ(ierr);
-
-    // // Create the vector 'b' for the right-hand side
-    // ierr = VecCreate(MPI_COMM_WORLD, &b);CHKERRQ(ierr);
-    // ierr = VecSetSizes(b, m, PETSC_DECIDE);CHKERRQ(ierr);
-    // ierr = VecSetFromOptions(b);CHKERRQ(ierr);
-
-    // // Create the matrix for the inverse
-    // ierr = MatDuplicate(psol[cEq].A_mn[0], MAT_COPY_VALUES, &A_inv);CHKERRQ(ierr);
-
-    // for (PetscInt i = 0; i < m; ++i) {
-    //     // Set b as the i-th unit vector
-    //     ierr = VecSet(b, 0.0);CHKERRQ(ierr);
-    //     ierr = VecSetValue(b, i, 1.0, INSERT_VALUES);CHKERRQ(ierr);
-    //     ierr = VecAssemblyBegin(b);CHKERRQ(ierr);
-    //     ierr = VecAssemblyEnd(b);CHKERRQ(ierr);
-        
-    //     // Solve for x, which will be the i-th column of A^{-1}
-    //     ierr = MatSolve(LU, b, x);CHKERRQ(ierr);
-
-    //     // Extract values from x vector and store in A_inv
-    //     ierr = VecGetArray(x, &xArray);CHKERRQ(ierr);  // Get the array of values from the vector
-    //     ierr = MatSetValues(A_inv, m, rowIndices, 1, &i, xArray, INSERT_VALUES);CHKERRQ(ierr);
-    //     ierr = VecRestoreArray(x, &xArray);CHKERRQ(ierr);
-    // }
-
-    // // CHE E STA MERDA DEL CAZZZOOOOOOO DIO BONO
-    // ierr = MatAssemblyBegin(A_inv, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-    // ierr = MatAssemblyEnd(A_inv, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-    
-    // // Cleanup
-    // ierr = MatDestroy(&LU);CHKERRQ(ierr);
-    // ierr = VecDestroy(&x);CHKERRQ(ierr);
-    // ierr = VecDestroy(&b);CHKERRQ(ierr);
-
-    // // Compute Schur complement: S = D - C * X
-    // ierr = MatMatMult(A_inv, psol[cEq].A_mn[1], MAT_INITIAL_MATRIX, PETSC_DETERMINE, &X);
-    // ierr = MatMatMult(psol[cEq].A_mn[2], X, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &SS);
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatMatMult: %d\n", ierr);
-    // }
-    // ierr = MatScale(SS, -1.0);
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatScale: %d\n", ierr);
-    // }
-    // ierr = MatAXPY(SS, -1.0, psol[cEq].A_mn[3], SAME_NONZERO_PATTERN); 
-    // if (ierr) {
-    //     PetscPrintf(PETSC_COMM_WORLD, "Error in MatAXPY: %d\n", ierr);
-    // }
-
-    // PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrix00.dat", FILE_MODE_WRITE, &viewer);
-    // MatView(psol[cEq].A_mn[0], viewer);
-    // PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrix01.dat", FILE_MODE_WRITE, &viewer);
-    // MatView(psol[cEq].A_mn[1], viewer);
-    // PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrix10.dat", FILE_MODE_WRITE, &viewer);
-    // MatView(psol[cEq].A_mn[2], viewer);
-    // PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrix11.dat", FILE_MODE_WRITE, &viewer);
-    // MatView(psol[cEq].A_mn[3], viewer);
-    // PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrixS.dat", FILE_MODE_WRITE, &viewer);
-    // MatView(SS, viewer);
-
-    // PetscViewerDestroy(&viewer);
-
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-    // ==========================================================================
-
-
-
-
-
-
-
-
-    // Update the PCSHELL context with the tangent matrix
-    if (psol[cEq].bnpc)
-    {
-        PC pc;
-        PC_SCRCtx *ctx;
-
-        KSPGetPC(psol[cEq].ksp, &pc);
-        PCShellGetContext(pc, &ctx);
-        ctx->SetMatrix(psol[cEq].A);
-        MatCreateShell(MPI_COMM_WORLD, ctx->local_size_p , ctx->local_size_p, 
-            PETSC_DECIDE, PETSC_DECIDE, ctx, &ctx->S);
-        MatShellSetOperation(ctx->S, MATOP_MULT, (void (*)(void))SCR_MATApply);
-        // PCShellSetSetUp(pc, SCR_PCSetUp);
-        // PCShellGetContext(pc, &ctx);
-        // KSPGetOperators(psol[cEq].ksp, &Amat, NULL);
-        // ctx->BlockNestedPC_SetMatrix(Amat);
+    /* Set up block-iterative preconditioner */
+    if (psol[cEq].block_iterative_pc && block_PC) {
+        block_PC->setMatrix(psol[cEq].A);
     }
 
-    if (psol[cEq].simple)
-    {
-        PC pc;
-        PC_SCRCtx *ctx;
-
-        KSPGetPC(psol[cEq].ksp, &pc);
-        PCShellGetContext(pc, &ctx);
-        ctx->SetMatrix(psol[cEq].A);
+    PC pc;
+    KSPGetPC(psol[cEq].ksp, &pc);
+    PetscObjectTypeCompare((PetscObject)pc, PCFIELDSPLIT, &usefieldsplit);
+    if (usefieldsplit) {
+        PCFieldSplitSetType(pc, PC_COMPOSITE_SCHUR);
+        PCFieldSplitSetSchurFactType(pc, PC_FIELDSPLIT_SCHUR_FACT_FULL);
+        PCFieldSplitSetSchurPre(pc, PC_FIELDSPLIT_SCHUR_PRE_SELFP, NULL);
     }
 
     /* Calculate residual for direct solver. KSP uses preconditioned norm. */
@@ -577,11 +421,6 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
     }
 
     KSPSetUp(psol[cEq].ksp);
-
-    PetscViewerAndFormat *vf;
-    PetscViewerAndFormatCreate(PETSC_VIEWER_STDOUT_WORLD, PETSC_VIEWER_DEFAULT, &vf);
-    KSPMonitorSet(psol[cEq].ksp, (PetscErrorCode(*)(KSP, PetscInt, PetscReal, void *))KSPMonitorDefault, vf, (PetscErrorCode(*)(void **))PetscViewerAndFormatDestroy);
-
     KSPSolve(psol[cEq].ksp, psol[cEq].b, psol[cEq].b);
 
     /* Rescale solution for RCS preconditioner */
@@ -593,14 +432,13 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
     /* Fill the ghost vertices with correct values. */
 
     Vec *svec; // It is used to point to the nested vector subvectors.
-    if (psol[cEq].bnpc || psol[cEq].simple)
+    if (psol[cEq].block_iterative_pc)
     {
         VecNestGetSubVecs(psol[cEq].b, NULL, &svec);
         VecGhostUpdateBegin(svec[0], INSERT_VALUES, SCATTER_FORWARD);
         VecGhostUpdateEnd(svec[0], INSERT_VALUES, SCATTER_FORWARD);
         VecGhostUpdateBegin(svec[1], INSERT_VALUES, SCATTER_FORWARD);
         VecGhostUpdateEnd(svec[1], INSERT_VALUES, SCATTER_FORWARD);
-        
     } else 
     {
         VecGhostUpdateBegin(psol[cEq].b, INSERT_VALUES, SCATTER_FORWARD);
@@ -627,7 +465,7 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
     *execTime = te - ts;
 
     /* Export solution to svFSI. */
-    if (psol[cEq].bnpc || psol[cEq].simple)
+    if (psol[cEq].block_iterative_pc)
     {
         VecGhostGetLocalForm(svec[0], &lx_0);
         VecGhostGetLocalForm(svec[1], &lx_1);
@@ -721,14 +559,17 @@ void petsc_destroy_all(const PetscInt nEq)
             MatDestroy(&psol[cEq].A_mn[2]);
             MatDestroy(&psol[cEq].A_mn[3]);
             KSPDestroy(&psol[cEq].ksp);
-
-
-
-            if (psol[cEq].bnpc || psol[cEq].simple)
+            if (block_PC != nullptr) 
             {
-                psol[cEq].bnpc = PETSC_FALSE;
-                psol[cEq].simple = PETSC_FALSE;
-                
+                delete block_PC;  // Destroy the dynamically allocated object
+                block_PC = nullptr;  // Avoid dangling pointer
+            }
+
+
+            if (psol[cEq].block_iterative_pc)
+            {
+                psol[cEq].block_iterative_pc = PETSC_FALSE;
+
                 PetscFree(plhs.ghostltg_0);
                 PetscFree(plhs.ghostltg_1);
 
@@ -736,6 +577,8 @@ void petsc_destroy_all(const PetscInt nEq)
                 psol[cEq].lpPts_1 = 0;
                 PetscFree(psol[cEq].lpBC_l_0); PetscFree(psol[cEq].lpBC_g_0);
                 PetscFree(psol[cEq].lpBC_l_1); PetscFree(psol[cEq].lpBC_g_1);
+                PetscFree(psol[cEq].svFSI_lpBC_0); 
+                PetscFree(psol[cEq].svFSI_lpBC_1);
                 psol[cEq].DirPts_0 = 0;
                 psol[cEq].DirPts_1 = 0;
                 PetscFree(psol[cEq].DirBC_0); PetscFree(psol[cEq].svFSI_DirBC_0);
@@ -950,7 +793,6 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
     PetscInt i, j, cc, dd, ii, nvec;
     PetscInt *row1_0, *row1_1, *row2_0, *row2_1;
     PetscInt local_size_0, local_size_1;
-    PetscReal *svFSI_lpBC_0, *svFSI_lpBC_1;
     PetscReal eps = 1.0e6 * __DBL_EPSILON__;
 
     PetscFunctionBeginUser;
@@ -960,8 +802,8 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
 
     PetscCall(PetscMalloc1(local_size_0, &psol[cEq].svFSI_DirBC_0));
     PetscCall(PetscMalloc1(local_size_1, &psol[cEq].svFSI_DirBC_1));
-    PetscCall(PetscMalloc1(local_size_0, &svFSI_lpBC_0));
-    PetscCall(PetscMalloc1(local_size_1, &svFSI_lpBC_1));
+    PetscCall(PetscMalloc1(local_size_0, &psol[cEq].svFSI_lpBC_0));
+    PetscCall(PetscMalloc1(local_size_1, &psol[cEq].svFSI_lpBC_1));
 
     /* Find PETSc global index of dofs with Dirichlet BC */
     PetscCall(PetscMalloc1(plhs.mynNo * (dof-1), &row1_0));
@@ -969,31 +811,31 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
     
     for (i = 0; i < plhs.mynNo; i++)
     {
-        ii = i * dof; //index for svFSI_DirBC
+        ii = i * dof;
         for (j=0; j< dof-1; j++)
         {
-            svFSI_lpBC_0[i * (dof - 1) + j] = svFSI_lpBC[ii+j];
+            psol[cEq].svFSI_lpBC_0[i * (dof - 1) + j] = svFSI_lpBC[ii+j];
             psol[cEq].svFSI_DirBC_0[i * (dof - 1) + j] = svFSI_DirBC[ii+j];
         }
     }
 
     for (i = 0; i < plhs.mynNo; i++)
     {  
-        ii = i * dof; //index for svFSI_DirBC
-        svFSI_lpBC_1[i] = svFSI_lpBC[ii+(dof-1)];
+        ii = i * dof;
+        psol[cEq].svFSI_lpBC_1[i] = svFSI_lpBC[ii+(dof-1)];
         psol[cEq].svFSI_DirBC_1[i] = svFSI_DirBC[ii+(dof-1)];
     }
 
     cc = 0;
     dd = 0;
-    for (i = 0; i < plhs.mynNo; i++) // loop on mynNo since BC are only set on the nodes where solution is computed
+    for (i = 0; i < plhs.mynNo; i++)
     {
         ii = i * (dof - 1);
         for (j = 0; j < (dof - 1); j++)
         {
             if (((int)psol[cEq].svFSI_DirBC_0[ii + j]) == 0)
             {
-                row1_0[cc++] = plhs.ltg[i] * (dof - 1) + j; // Should be local to the subvector of (dof - 1) dof
+                row1_0[cc++] = plhs.ltg[i] * (dof - 1) + j; 
             }
         }
     }
@@ -1002,7 +844,7 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
     {
         if (((int)psol[cEq].svFSI_DirBC_1[i]) == 0)
         {
-            row1_1[dd++] = plhs.ltg[i]; // Should be local to the subvector of 1 dof
+            row1_1[dd++] = plhs.ltg[i]; 
         }
     }
 
@@ -1030,7 +872,7 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
         ii = i * (dof - 1);
         for (j = 0; j < (dof - 1); j++)
         {
-            if (PetscAbsReal(svFSI_lpBC_0[ii + j]) > eps)
+            if (PetscAbsReal(psol[cEq].svFSI_lpBC_0[ii + j]) > eps)
             {
                 row1_0[cc] = ii + j;
                 row2_0[cc] = plhs.ltg[i] * (dof - 1) + j;
@@ -1040,7 +882,7 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
     }
     for (i = 0; i < plhs.mynNo; i++)
     {
-        if (PetscAbsReal(svFSI_lpBC_1[i]) > eps)
+        if (PetscAbsReal(psol[cEq].svFSI_lpBC_1[i]) > eps)
         {
             row1_1[dd] = i;
             row2_1[dd] = plhs.ltg[i];
@@ -1067,8 +909,6 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
     PetscCall(PetscFree(row2_0));
     PetscCall(PetscFree(row1_1));
     PetscCall(PetscFree(row2_1));
-    PetscCall(PetscFree(svFSI_lpBC_0));
-    PetscCall(PetscFree(svFSI_lpBC_1));
     
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1134,7 +974,7 @@ PetscErrorCode petsc_create_vecmat(const PetscInt dof, const PetscInt cEq, const
     PetscObjectTypeCompare((PetscObject)pc, PCFIELDSPLIT, &usefieldsplit); /* Fieldsplit only supports MATAIJ */
     PetscObjectTypeCompare((PetscObject)pc, PCGAMG, &useamg);              /* GAMG only supports MATAIJ */
     PetscCall(MatCreate(MPI_COMM_WORLD, &psol[cEq].A));
-    if (dof > 1 && !usefieldsplit && !useamg && !psol[cEq].bnpc && !psol[cEq].simple)
+    if (dof > 1 && !usefieldsplit && !useamg && !psol[cEq].block_iterative_pc)
     {
         PetscCall(MatSetType(psol[cEq].A, MATBAIJ));
     }
@@ -1327,7 +1167,7 @@ PetscErrorCode petsc_set_vec(const PetscInt dof, const PetscInt cEq, const Petsc
 }
 
 /*
-    Set values to the subvector b_n[].
+    Set values to the subvectors b_n[].
     R is the rhs from svFSI in O1 order.
 */
 PetscErrorCode petsc_set_splitvec(const PetscInt dof, const PetscInt cEq, const PetscReal *R)
@@ -1497,9 +1337,9 @@ PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, const Pe
             PetscCall(MatSetValue(psol[cEq].A, row, col, value, ADD_VALUES));
         }
     }
-    PetscCall(MatAssemblyBegin(psol[cEq].A, MAT_FINAL_ASSEMBLY));
-    PetscCall(MatAssemblyEnd(psol[cEq].A, MAT_FINAL_ASSEMBLY));
 
+    PetscCall(MatAssemblyBegin(psol[cEq].A, MAT_FINAL_ASSEMBLY));
+    PetscCall(MatAssemblyEnd(psol[cEq].A, MAT_FINAL_ASSEMBLY));    
     /*
         Apply Dirichlet BC by resetting matrix A and rhs b.
         Since the BC remains the same, the matrix will retain the same nonzero structure
@@ -1515,7 +1355,7 @@ PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, const Pe
 /*
     Set up Dirichlet BC and resistance BC for submatrices A_mn[] and subvectors b_n[].
 */
-PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, const PetscReal *lpBC)
+PetscErrorCode petsc_set_splitbc(const PetscInt cEq)
 {
     Vec x;
     PetscInt i, j, ii, jj, row, col;
@@ -1535,14 +1375,14 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
         {
             jj = psol[cEq].lpBC_l_0[j];
             col = psol[cEq].lpBC_g_0[j];
-            value = lpBC[ii] * lpBC[jj];
+            value = psol[cEq].svFSI_lpBC_0[ii] * psol[cEq].svFSI_lpBC_0[jj];
             PetscCall(MatSetValue(psol[cEq].A_mn[0], row, col, value, ADD_VALUES));
         }
         for (j = 0; j < psol[cEq].lpPts_1; j++)
         {
             jj = psol[cEq].lpBC_l_1[j];
             col = psol[cEq].lpBC_g_1[j];
-            value = lpBC[ii] * lpBC[jj];
+            value = psol[cEq].svFSI_lpBC_0[ii] * psol[cEq].svFSI_lpBC_1[jj];
             PetscCall(MatSetValue(psol[cEq].A_mn[1], row, col, value, ADD_VALUES));
         }
     }
@@ -1554,14 +1394,14 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
         {
             jj = psol[cEq].lpBC_l_0[j];
             col = psol[cEq].lpBC_g_0[j];
-            value = lpBC[ii] * lpBC[jj];
+            value = psol[cEq].svFSI_lpBC_1[ii] * psol[cEq].svFSI_lpBC_0[jj];
             PetscCall(MatSetValue(psol[cEq].A_mn[2], row, col, value, ADD_VALUES));
         }
         for (j = 0; j < psol[cEq].lpPts_1; j++)
         {
             jj = psol[cEq].lpBC_l_1[j];
             col = psol[cEq].lpBC_g_1[j];
-            value = lpBC[ii] * lpBC[jj];
+            value = psol[cEq].svFSI_lpBC_1[ii] * psol[cEq].svFSI_lpBC_1[jj];
             PetscCall(MatSetValue(psol[cEq].A_mn[3], row, col, value, ADD_VALUES));
         }
     }
@@ -1570,17 +1410,19 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
     PetscCall(MatAssemblyBegin(psol[cEq].A_mn[1], MAT_FINAL_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[1], MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyBegin(psol[cEq].A_mn[2], MAT_FINAL_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[2], MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyBegin(psol[cEq].A_mn[3], MAT_FINAL_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[3], MAT_FINAL_ASSEMBLY));
-     
 
     /*
         Apply Dirichlet BC by resetting submatrices A_mn and rhs b_n.
     */
+    /* Apply Dirichlet BC to A_00 submatrix: zero-out rows and columns, set diag to 1 */
     PetscCall(VecDuplicate(psol[cEq].b_n[0], &x));
     PetscCall(VecPlaceArray(x, psol[cEq].svFSI_DirBC_0));
     PetscCall(MatZeroRowsColumns(psol[cEq].A_mn[0], psol[cEq].DirPts_0, psol[cEq].DirBC_0, 1.0, x, psol[cEq].b_n[0]));
-    
+
+    /* Apply Dirichlet BC to A_01 submatrix: zero-out rows */
     PetscCall(MatZeroRows(psol[cEq].A_mn[1], psol[cEq].DirPts_0, psol[cEq].DirBC_0, 0.0, NULL, NULL));
     
+    /* Apply Dirichlet BC to A_10 submatrix: zero-out columns */
     PetscCall(MatTranspose(psol[cEq].A_mn[2], MAT_INITIAL_MATRIX, &transpose));
     PetscCall(MatZeroRows(transpose, psol[cEq].DirPts_0, psol[cEq].DirBC_0, 0.0, NULL, NULL));
     PetscCall(MatAssemblyBegin(transpose, MAT_FINAL_ASSEMBLY));
@@ -1588,6 +1430,7 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
     PetscCall(MatTranspose(transpose, MAT_INITIAL_MATRIX, &newmat));
     PetscCall(MatCopy(newmat, psol[cEq].A_mn[2], DIFFERENT_NONZERO_PATTERN));
 
+    /* Apply Dirichlet BC to A_11 submatrix: zero-out rows and columns, set diag to 1 */
     PetscCall(VecDestroy(&x));
     PetscCall(VecDuplicate(psol[cEq].b_n[1], &x));
     PetscCall(VecPlaceArray(x, psol[cEq].svFSI_DirBC_1));
@@ -1596,14 +1439,13 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq, const PetscReal *DirBC, con
     /* Assemble the nested matrix */
     PetscCall(MatCreateNest(MPI_COMM_WORLD, 2, NULL, 2, NULL, psol[cEq].A_mn, &psol[cEq].A));
     PetscCall(MatNestSetVecType(psol[cEq].A,VECNEST));
-
     PetscCall(VecCreateNest(MPI_COMM_WORLD, 2, NULL, psol[cEq].b_n, &psol[cEq].b));
- 
+
     // Clean up
     PetscCall(MatDestroy(&transpose));
     PetscCall(MatDestroy(&newmat));
     PetscCall(VecDestroy(&x));
-
+    
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -1942,7 +1784,7 @@ void PetscLinearAlgebra::PetscImpl::initialize(ComMod &com_mod, eqType &equation
         }
     }
 
-    petsc_create_linearsolver(ls_type, prec_type, ls.sD, ls.mItr, ls.relTol, ls.absTol,
+    petsc_create_linearsolver(ls_type, prec_type, ls.pc_params, ls.sD, ls.mItr, ls.relTol, ls.absTol,
                               phys, equation.dof, com_mod.lhs.nnz, eq_num, com_mod.nEq);
 }
 
@@ -1972,78 +1814,68 @@ void PetscLinearAlgebra::PetscImpl::solve(ComMod &com_mod, eqType &lEq, const Ve
                 &lEq.FSILS.RI.suc, &lEq.FSILS.RI.itr, com_mod.R.data(), lEq.FSILS.RI.mItr, com_mod.dof, com_mod.cEq);
 }
 
-//-----------------------------------------------
-// Schur Complement Reduction (SCR) Preconditioner
-//-----------------------------------------------
+//--------------------------------
+// Block-Iterative Preconditioners
+//--------------------------------
 
-PC_SCRCtx::PC_SCRCtx( const PetscReal rtol0, const PetscReal atol0,
-    const PetscReal dtol0, const PetscInt maxit0,
-    const PetscReal rtol1, const PetscReal atol1,
-    const PetscReal dtol1, const PetscInt maxit1)
-{
-    solver_0 = new PC_LSCtx(rtol0, atol0, dtol0, maxit0, "ls0_", "pc0_");
-    solver_1 = new PC_LSCtx(rtol1, atol1, dtol1, maxit1, "ls1_", "pc1_");
-};
-
-PC_SCRCtx::~PC_SCRCtx()
+/*
+    Schur Complement Reduction (SCR) preconditioner
+*/
+SCR_Preconditioner::~SCR_Preconditioner()
 {
     // Clean up internal linear solvers
     delete solver_0;
     delete solver_1;
 
-    // Clean up block matrices
-    if (subA) {
+    auto A = getSubMatrix();
+
+    // Clean up sub-matrices
+    if (A) {
         for (PetscInt i = 0; i < 3; ++i) {
-            for (PetscInt j = 0; j < 3; ++j) {
-                MatDestroy(&subA[i][j]);
+            if (A[i]) { 
+                for (PetscInt j = 0; j < 3; ++j) {
+                    MatDestroy(&A[i][j]); 
+                }
+                PetscFree(A[i]); 
             }
-            PetscFree(subA[i]);
         }
-        PetscFree(subA);
+        PetscFree(A);
+        A = NULL;
     }
 
     // Clean up sub-vectors
     if (subR) {
         for (PetscInt i = 0; i < 2; ++i) {
-            VecDestroy(&subR[i]);
+            VecDestroy(&subR[i]); 
         }
         PetscFree(subR);
+        subR = NULL;
     }
 
     if (subZ) {
         for (PetscInt i = 0; i < 2; ++i) {
-            VecDestroy(&subZ[i]);
+            VecDestroy(&subZ[i]); 
         }
         PetscFree(subZ);
+        subZ = NULL;
     }
 
     MatDestroy(&Ps);
     MatDestroy(&S);
-    VecDestroy(&v_0);
-    VecDestroy(&v_1);
-    VecDestroy(&v_1_tmp);
 
 };
 
-PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z)
+PetscErrorCode SCR_Preconditioner::SCR_PCApply(PC pc, Vec r, Vec z)
 {
     Vec z_0_temp, z_1_temp;
+    PC pc_0, pc_1;
+
     PetscErrorCode ierr;
 
     PetscFunctionBeginUser;
 
-    PC_SCRCtx *ctx;
-    PCShellGetContext(pc, &ctx);
-    
-    auto &pc_0 = ctx->pc_0;
-    auto &pc_1 = ctx->pc_1;
-    auto &solver_0 = ctx->solver_0;
-    auto &solver_1 = ctx->solver_1;
-    auto &subA = ctx->subA;
-    auto &subR = ctx->subR;
-    auto &subZ = ctx->subZ;
+    auto subA = getSubMatrix();
 
-    // Getting subvectors from nested vectors
     PetscCall(VecNestGetSubVecs(r, NULL, &subR));
     PetscCall(VecNestGetSubVecs(z, NULL, &subZ));
 
@@ -2058,25 +1890,17 @@ PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z)
     //-------------------------------------------------
     // Intermediate solver
     /*
-     -------------------------------------------------
      solver_0 -> A_00 * z_0 = r_0 
-     -------------------------------------------------
     */
-    // solver_0->Monitor();
-    solver_0->GetPC(&pc_0);
-    PetscCall(PCSetType(pc_0, PCHYPRE));
-    PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
-    PetscCall(PCSetFromOptions(pc_0));
-
+    solver_0->SetOperator(subA[0][0]);
+    set_internal_pc_type(solver_0, pc_0, pc_type_0);
     solver_0->Solve(subR[0], subZ[0], PETSC_FALSE);
     PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
     /*
-     -------------------------------------------------
      z_1 = r_1 - A_10 * z_0
-     -------------------------------------------------
     */
-    PetscCall(MatMult(subA[1][0], subZ[0], z_1_temp));
+    MatMult(subA[1][0], subZ[0], z_1_temp);
     PetscCall(VecAssemblyBegin(z_1_temp)); PetscCall(VecAssemblyEnd(z_1_temp));
 
     PetscCall(VecWAXPY(subZ[1], -1.0, z_1_temp, subR[1]));
@@ -2086,27 +1910,20 @@ PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z)
     // Inner solver 
 
     /*
-      -------------------------------------------------
       solver_1 -> S * z_1 = r_1 - A_10 * z_0 
       S = A_11 - A_10 * A_00^{-1} * A_01
       matrix-free alghorithm for S involves application
       of S to a vector x = r_1 - A_10 * z_0 and using
       GMRES solver to solve for z_1
-      -------------------------------------------------
     */
-    solver_1->SetOperator(ctx->S, ctx->Ps);
-
-    // Preconditioner to solver_0
-    solver_1->GetPC(&pc_1);
-    PetscCall(PCSetType(pc_1, PCHYPRE));
-    PetscCall(PCHYPRESetType(pc_1, "boomeramg"));
-    PetscCall(PCSetFromOptions(pc_1));
-
-    //solver_1->Monitor();
-    solver_1->Solve(subZ[1], subZ[1], PETSC_TRUE);
+    solver_1->SetOperator(S, Ps);
+    set_internal_pc_type(solver_1, pc_1, pc_type_1);
+    solver_1->Solve(subZ[1], subZ[1], PETSC_FALSE);
     PetscCall(VecAssemblyBegin(subZ[1])); PetscCall(VecAssemblyEnd(subZ[1]));
 
-    // Update the momentum residual: z_0 = r_0 - A_01 * z_1
+    /* 
+      z_0 = r_0 - A_01 * z_1
+    */
     PetscCall(MatMult(subA[0][1], subZ[1], z_0_temp));
     PetscCall(VecAssemblyBegin(z_0_temp)); PetscCall(VecAssemblyEnd(z_0_temp));
 
@@ -2114,16 +1931,9 @@ PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z)
     PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
     /*
-     -------------------------------------------------
      Solve A_00 * z_0 = r_0
-     -------------------------------------------------
     */
-    //solver_0->Monitor();
-    solver_0->GetPC(&pc_0);
-    PetscCall(PCSetType(pc_0, PCHYPRE));
-    PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
-    PetscCall(PCSetFromOptions(pc_0));
-
+    set_internal_pc_type(solver_0, pc_0, pc_type_0);
     solver_0->Solve(subZ[0], subZ[0], PETSC_FALSE);
     PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
     
@@ -2134,26 +1944,132 @@ PetscErrorCode SCR_PCApply(PC pc, Vec r, Vec z)
     PetscFunctionReturn(PETSC_SUCCESS);
 };
 
-PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z)
+PetscErrorCode SCR_Preconditioner::SetApproximateSchur()
+{
+    Vec diagA, invDiagA;
+    Mat BinvDiagA, CBinvDiagA;
+
+    auto A = getSubMatrix();
+
+    PetscCall(MatCreateVecs(A[0][0], &diagA, NULL));
+    PetscCall(MatGetDiagonal(A[0][0], diagA));
+
+    PetscCall(VecDuplicate(diagA, &invDiagA));
+    PetscCall(VecCopy(diagA, invDiagA));
+    PetscCall(VecReciprocal(invDiagA));
+
+    PetscCall(MatDuplicate(A[0][1], MAT_COPY_VALUES, &BinvDiagA));
+    PetscCall(MatDiagonalScale(BinvDiagA, invDiagA, NULL));
+
+    PetscCall(MatMatMult(A[1][0], BinvDiagA, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &CBinvDiagA));
+
+    PetscCall(MatDuplicate(A[1][1], MAT_COPY_VALUES, &Ps));
+    PetscCall(MatAXPY(Ps, -1.0, CBinvDiagA, DIFFERENT_NONZERO_PATTERN)); 
+
+    // Cleanup
+    PetscCall(VecDestroy(&diagA));
+    PetscCall(VecDestroy(&invDiagA));
+    PetscCall(MatDestroy(&BinvDiagA));
+    PetscCall(MatDestroy(&CBinvDiagA));
+}
+
+PetscErrorCode SCR_Preconditioner::SCR_SchurApply(Mat mat, Vec x, Vec y)
+{
+    Vec v_0, v_1, v_1_tmp;
+    PC pc_0;
+
+    PetscFunctionBeginUser;
+
+    SCR_Preconditioner *ctx;
+    PetscCall(MatShellGetContext(mat, &ctx));
+
+    auto A = ctx->getSubMatrix();
+
+    VecCreate(MPI_COMM_WORLD, &v_0);
+    VecSetSizes(v_0, ctx->GetSize(0), PETSC_DECIDE);
+    VecSetUp(v_0);
+    VecCreate(MPI_COMM_WORLD, &v_1);
+    VecSetSizes(v_1, ctx->GetSize(1), PETSC_DECIDE);
+    VecSetUp(v_1);
+    VecDuplicate(v_1, &v_1_tmp);
+
+    auto &solver_0 = ctx->solver_0;
+
+    PetscCall(MatMult(A[1][1], x, v_1));
+    PetscCall(MatMult(A[0][1], x, v_0));
+
+    solver_0->SetOperator(A[0][0]);
+    ctx->set_internal_pc_type(solver_0, pc_0, ctx->pc_type_0);
+    solver_0->Solve(v_0, v_0, PETSC_FALSE);
+
+    PetscCall(MatMult(A[1][0], v_0, v_1_tmp));
+
+    PetscCall(VecWAXPY(y, -1.0, v_1_tmp, v_1));
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+
+    VecDestroy(&v_0);
+    VecDestroy(&v_1);
+    VecDestroy(&v_1_tmp);
+};
+
+/*
+    SIMPLE preconditioner
+*/
+SIMPLE_Preconditioner::~SIMPLE_Preconditioner()
+{
+    // Clean up internal linear solvers
+    delete solver_0;
+
+    auto A = getSubMatrix();
+
+    // Clean up sub-matrices
+    if (A) {
+        for (PetscInt i = 0; i < 3; ++i) {
+            if (A[i]) { 
+                for (PetscInt j = 0; j < 3; ++j) {
+                    MatDestroy(&A[i][j]); 
+                }
+                PetscFree(A[i]); 
+            }
+        }
+        PetscFree(A);
+        A = NULL;
+    }
+
+    // Clean up sub-vectors
+    if (subR) {
+        for (PetscInt i = 0; i < 2; ++i) {
+            VecDestroy(&subR[i]); 
+        }
+        PetscFree(subR);
+        subR = NULL;
+    }
+
+    if (subZ) {
+        for (PetscInt i = 0; i < 2; ++i) {
+            VecDestroy(&subZ[i]); 
+        }
+        PetscFree(subZ);
+        subZ = NULL;
+    }
+
+    MatDestroy(&Ps);
+};
+
+PetscErrorCode SIMPLE_Preconditioner::SIMPLE_PCApply(PC pc, Vec r, Vec z)
 {
     Vec z_0_temp, z_d_temp, z_1_temp;
     Vec diagA;
     Mat matB;
 
+    PC pc_0, pc_1;
+
     PetscErrorCode ierr;
 
     PetscFunctionBeginUser;
 
-    PC_SCRCtx *ctx;
-    PCShellGetContext(pc, &ctx);
-    
-    auto &pc_0 = ctx->pc_0;
-    auto &pc_1 = ctx->pc_1;
-    auto &solver_0 = ctx->solver_0;
-    auto &solver_1 = ctx->solver_1;
-    auto &subA = ctx->subA;
-    auto &subR = ctx->subR;
-    auto &subZ = ctx->subZ;
+    auto subA = getSubMatrix();
 
     // Getting subvectors from nested vectors
     PetscCall(VecNestGetSubVecs(r, NULL, &subR));
@@ -2177,12 +2093,8 @@ PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z)
      solver_0 -> A_00 * z_0 = r_0 
      -------------------------------------------------
     */
-    // solver_0->Monitor();
-    // solver_0->GetPC(&pc_0);
-    // PetscCall(PCSetType(pc_0, PCHYPRE));
-    // PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
-    // PetscCall(PCSetFromOptions(pc_0));
-
+    solver_0->SetOperator(subA[0][0]);
+    set_internal_pc_type(solver_0, pc_0, pc_type_0);
     solver_0->Solve(subR[0], subZ[0], PETSC_FALSE);
     PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
@@ -2202,22 +2114,14 @@ PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z)
 
     /*
       -------------------------------------------------
-      solver_1 -> S * z_1 = r_1 - A_10 * z_0 
-      S = A_11 - A_10 * A_00^{-1} * A_01
-      matrix-free alghorithm for S involves application
-      of S to a vector x = r_1 - A_10 * z_0 and using
-      GMRES solver to solve for z_1
+      solver_1 -> Ps * z_1 = r_1 - A_10 * z_0 
+      Ps = A_11 - A_10 * (diag(A_00))^{-1} * A_01
+      where Ps is an approximation of the Schur complement
+      and using GMRES solver to solve for z_1
       -------------------------------------------------
     */
-    solver_1->SetOperator(ctx->Ps, ctx->Ps);
-
-    // Preconditioner to solver_0
-    // solver_1->GetPC(&pc_1);
-    // PetscCall(PCSetType(pc_1, PCHYPRE));
-    // PetscCall(PCHYPRESetType(pc_1, "boomeramg"));
-    // PetscCall(PCSetFromOptions(pc_1));
-
-    solver_1->Monitor();
+    solver_1->SetOperator(Ps, Ps);
+    set_internal_pc_type(solver_0, pc_0, pc_type_0);
     solver_1->Solve(subZ[1], subZ[1], PETSC_FALSE);
     PetscCall(VecAssemblyBegin(subZ[1])); PetscCall(VecAssemblyEnd(subZ[1]));
 
@@ -2230,8 +2134,6 @@ PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z)
     PetscCall(MatMult(matB, subZ[1], z_0_temp));
     PetscCall(MatMult(subA[0][0], z_0_temp, z_d_temp));
     PetscCall(VecWAXPY(subZ[0], -1.0, z_d_temp, subR[0]));
-    // PetscCall(MatMult(subA[0][1], subZ[1], z_0_temp));
-    // PetscCall(VecWAXPY(subZ[0], -1.0, z_0_temp, subR[0]));
     PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
 
     /*
@@ -2239,12 +2141,7 @@ PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z)
      Solve A_00 * z_0 = r_0
      -------------------------------------------------
     */
-    //solver_0->Monitor();
-    // solver_0->GetPC(&pc_0);
-    // PetscCall(PCSetType(pc_0, PCHYPRE));
-    // PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
-    // PetscCall(PCSetFromOptions(pc_0));
-
+    set_internal_pc_type(solver_0, pc_0, pc_type_0);
     solver_0->Solve(subZ[0], subZ[0], PETSC_FALSE);
     PetscCall(VecAssemblyBegin(subZ[0])); PetscCall(VecAssemblyEnd(subZ[0]));
     
@@ -2258,63 +2155,26 @@ PetscErrorCode SIMPLE_PCApply(PC pc, Vec r, Vec z)
     PetscFunctionReturn(PETSC_SUCCESS);
 };
 
-// PetscErrorCode SCR_PCSetUp(PC pc)
-// {
-//     PC pc_0, pc_1;
-
-//     PC_SCRCtx *ctx;
-//     PCShellGetContext(pc, &ctx);
-
-//     auto &solver_0 = ctx->solver_0;
-//     auto &solver_1 = ctx->solver_1;
-
-//     ctx->SetApproximateSchur(ctx->subA);
-
-//     solver_0->SetOperator(ctx->subA[0][0]);
-
-//     // Preconditioner to solver_0
-//     solver_0->GetPC(&pc_0);
-//     PetscCall(PCSetType(pc_0, PCHYPRE));
-//     PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
-//     PetscCall(PCSetFromOptions(pc_0));
-
-//     // Create the shell matrix for the Schur complement
-//     MatCreateShell(MPI_COMM_WORLD, ctx->local_size_p , ctx->local_size_p, 
-//         PETSC_DECIDE, PETSC_DECIDE, ctx, &ctx->S);
-//     MatShellSetOperation(ctx->S, MATOP_MULT, (void (*)(void))SCR_MATApply);
-
-//     solver_1->SetOperator(ctx->S, ctx->Ps);
-
-//     // Preconditioner to solver_0
-//     solver_1->GetPC(&pc_1);
-//     PetscCall(PCSetType(pc_1, PCHYPRE));
-//     PetscCall(PCHYPRESetType(pc_1, "boomeramg"));
-//     PetscCall(PCSetFromOptions(pc_1));
-// };
-
-PetscErrorCode PC_SCRCtx::SetApproximateSchur(Mat **K)
+PetscErrorCode SIMPLE_Preconditioner::SetApproximateSchur()
 {
     Vec diagA, invDiagA;
     Mat BinvDiagA, CBinvDiagA;
 
-    // Extract the diagonal of A
-    PetscCall(MatCreateVecs(K[0][0], &diagA, NULL));
-    PetscCall(MatGetDiagonal(K[0][0], diagA));
+    auto A = getSubMatrix();
 
-    // Compute inverse of the diagonal 
+    PetscCall(MatCreateVecs(A[0][0], &diagA, NULL));
+    PetscCall(MatGetDiagonal(A[0][0], diagA));
+
     PetscCall(VecDuplicate(diagA, &invDiagA));
     PetscCall(VecCopy(diagA, invDiagA));
     PetscCall(VecReciprocal(invDiagA));
 
-    // Compute BinvDiagA = B * invDiagA (Diagonal scaling)
-    PetscCall(MatDuplicate(K[0][1], MAT_COPY_VALUES, &BinvDiagA));
+    PetscCall(MatDuplicate(A[0][1], MAT_COPY_VALUES, &BinvDiagA));
     PetscCall(MatDiagonalScale(BinvDiagA, invDiagA, NULL));
 
-    // Compute CBinvDiagA = C * BinvDiagA
-    PetscCall(MatMatMult(K[1][0], BinvDiagA, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &CBinvDiagA));
+    PetscCall(MatMatMult(A[1][0], BinvDiagA, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &CBinvDiagA));
 
-    // Compute Schur complement approximation Ps = D - CBinvDiagA
-    PetscCall(MatDuplicate(K[1][1], MAT_COPY_VALUES, &Ps));
+    PetscCall(MatDuplicate(A[1][1], MAT_COPY_VALUES, &Ps));
     PetscCall(MatAXPY(Ps, -1.0, CBinvDiagA, DIFFERENT_NONZERO_PATTERN)); 
 
     // Cleanup
@@ -2324,47 +2184,39 @@ PetscErrorCode PC_SCRCtx::SetApproximateSchur(Mat **K)
     PetscCall(MatDestroy(&CBinvDiagA));
 }
 
-PetscErrorCode PC_SCRCtx::SetMatrix(Mat K)
+/* 
+    Setting PC parameters for the internal solvers
+*/
+PetscErrorCode BlockIterative_Preconditioner::set_internal_pc_type(PC_LSCtx *internal_solver, PC pc_internal, std::string pc_type) 
 {
-    PetscErrorCode ierr;
-
-    PetscFunctionBeginUser;
-
-    PetscCall(MatNestGetSubMats(K, NULL, NULL, &subA));
-
-    MatGetLocalSize(subA[0][1], &local_size_v, &local_size_p);
-    VecCreate(MPI_COMM_WORLD, &v_0);
-    VecSetSizes(v_0, local_size_v, PETSC_DECIDE);
-    VecSetUp(v_0);
-    VecCreate(MPI_COMM_WORLD, &v_1);
-    VecSetSizes(v_1, local_size_p, PETSC_DECIDE);
-    VecSetUp(v_1);
-    VecDuplicate(v_1, &v_1_tmp);
-
-    SetApproximateSchur(subA);
-
-    // PetscViewer viewer;
-    // PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrixPs.dat", FILE_MODE_WRITE, &viewer);
-    // MatView(Ps, viewer);
-
-    // PetscViewerDestroy(&viewer);
+    static const std::unordered_map<std::string, PCType> pc_map = {
+        {"jacobi",PCJACOBI},
+        {"bjacobi", PCBJACOBI},
+        {"amg", PCHYPRE},
+        {"none", PCNONE},
+        {"default", PCBJACOBI}
+    };
     
+    internal_solver->GetPC(&pc_internal);
 
-    solver_0->SetOperator(subA[0][0]);
-
-    // Preconditioner to solver_0
-    // solver_0->GetPC(&pc_0);
-    // PetscCall(PCSetType(pc_0, PCHYPRE));
-    // PetscCall(PCHYPRESetType(pc_0, "boomeramg"));
-    // PetscCall(PCSetFromOptions(pc_0));
-
-    PetscFunctionReturn(ierr);
+    auto it = pc_map.find(pc_type);
+    if (it != pc_map.end()) {
+        PetscCall(PCSetType(pc_internal, it->second));
+        if (pc_type == "amg") 
+        {
+            PetscCall(PCHYPRESetType(pc_internal, "boomeramg"));
+        }
+        PetscCall(PCSetFromOptions(pc_internal));
+        return 0;
+    } else {
+        throw std::runtime_error("[SCR_PC]: Unknown PC type: " + pc_type + " for internal solver.");
+    }
 }
 
-//-------------------------------------------------------------------------
-// Internal Linear solver for the Block Nested Preconditioner:
-// solver_0, solver_1
-//-------------------------------------------------------------------------
+/* 
+    Internal Linear solver for the Block Nested Preconditioner:
+    solver_0, solver_1
+*/
 
 PC_LSCtx::PC_LSCtx(
     const double &input_rtol, const double &input_atol,
@@ -2428,115 +2280,10 @@ void PC_LSCtx::get_ksp_estimate_condition() const
     PetscPrintf(MPI_COMM_WORLD, "  --- KSP: Condition Number Estimate %g\n", cond_num);
 
 };
-// MatrixFreeSchurComplement::MatrixFreeSchurComplement(Mat **K, BlockNestedPC_InternalLinearSolver *solver_0)
-// {
-//     PetscInt m, n, mm, nn;
-//     PetscErrorCode ierr;
 
-//     // Initialize the shell matrix context
-//     PetscMalloc1(1, &MatShellCtx);
-//     MatDuplicate(K[0][0], MAT_COPY_VALUES, &MatShellCtx->A00);
-//     MatDuplicate(K[0][1], MAT_COPY_VALUES, &MatShellCtx->A01);
-//     MatDuplicate(K[1][0], MAT_COPY_VALUES, &MatShellCtx->A10);
-//     MatDuplicate(K[1][1], MAT_COPY_VALUES, &MatShellCtx->A11);
-
-//     MatShellCtx->ASolver = solver_0;
-
-//     // Define size of temporary vectors and set up temporary vectors
-//     MatGetLocalSize(MatShellCtx->A01, &mm, &nn);
-//     VecCreate(MPI_COMM_WORLD, &MatShellCtx->v_0);
-//     VecSetSizes(MatShellCtx->v_0, mm, PETSC_DECIDE);
-//     VecSetUp(MatShellCtx->v_0);
-//     VecCreate(MPI_COMM_WORLD, &MatShellCtx->v_1);
-//     VecSetSizes(MatShellCtx->v_1, nn, PETSC_DECIDE);
-//     VecSetUp(MatShellCtx->v_1);
-//     VecDuplicate(MatShellCtx->v_1, &MatShellCtx->v_1_tmp);
-
-//     // Create the shell matrix for the Schur complement
-//     MatGetLocalSize(MatShellCtx->A11, &m, &n);
-//     MatCreateShell(MPI_COMM_WORLD, m, n, PETSC_DECIDE, PETSC_DECIDE, MatShellCtx, &S);
-// };
-
-// MatrixFreeSchurComplement::~MatrixFreeSchurComplement()
-// {
-//     // Destroy the vectors within the context
-//     VecDestroy(&MatShellCtx->v_0); 
-//     VecDestroy(&MatShellCtx->v_1);
-//     VecDestroy(&MatShellCtx->v_1_tmp);
-//     // Destroy the shell matrix
-//     MatDestroy(&S); 
-//     // Destroy the Matrices
-//     MatDestroy(&MatShellCtx->A00);
-//     MatDestroy(&MatShellCtx->A01);
-//     MatDestroy(&MatShellCtx->A10);
-//     MatDestroy(&MatShellCtx->A11);
-//     // Free the context
-//     PetscFree(MatShellCtx);
-// };
-
-// // Method to set the Schur complement operation
-// PetscErrorCode MatrixFreeSchurComplement::ApplySchurComplement()
-// {
-//     PetscFunctionBeginUser;
-//     PetscCall(MatShellSetOperation(S, MATOP_MULT, (void (*)(void))MatrixFreeSchurComplement::SchurComplMult));
-//     PetscFunctionReturn(PETSC_SUCCESS);
-// };
-
-// // Matrix-free procedure: Application of the Schur complement to a vector
-// // y = mat * x
-// // mat -> Schur complement matrix (not explicitly defined)
-// // x -> input vector ( it is the residual from the GMRES )
-// // y -> output vector ( it will form the krylov subspace in the GMRES )
-// PetscErrorCode MatrixFreeSchurComplement::SchurComplMult(Mat mat, Vec x, Vec y)
-// {
-//     ShellMatrixContext *ctx;
-
-//     PetscFunctionBeginUser;
-
-//     PetscCall(MatShellGetContext(mat, &ctx));
-
-//     // Krylov subspace: S * x
-//     PetscCall(MatMult(ctx->A11, x, ctx->v_1));
-//     PetscCall(MatMult(ctx->A01, x, ctx->v_0));
-
-//     // A00^{-1} * (A01 * x)
-//     ctx->ASolver->Solve(ctx->v_0, ctx->v_0, PETSC_FALSE);
-
-//     // (A10 * A00^{-1} * A01) * x
-//     PetscCall(MatMult(ctx->A10, ctx->v_0, ctx->v_1_tmp));
-
-//     // y = ( A11 - A10 * A00^{-1} * A01 ) * x = S * x
-//     PetscCall(VecWAXPY(y, -1.0, ctx->v_1_tmp, ctx->v_1));
-
-//     PetscFunctionReturn(PETSC_SUCCESS);
-// };
-
-PetscErrorCode SCR_MATApply(Mat mat, Vec x, Vec y)
-{
-    PetscFunctionBeginUser;
-
-    PC_SCRCtx *ctx;
-    PetscCall(MatShellGetContext(mat, &ctx));
-
-    auto &solver_0 = ctx->solver_0;
-
-    // Krylov subspace: S * x
-    PetscCall(MatMult(ctx->subA[1][1], x, ctx->v_1));
-    PetscCall(MatMult(ctx->subA[0][1], x, ctx->v_0));
-
-    // A00^{-1} * (A01 * x)
-    solver_0->Solve(ctx->v_0, ctx->v_0, PETSC_FALSE);
-
-    // (A10 * A00^{-1} * A01) * x
-    PetscCall(MatMult(ctx->subA[1][0], ctx->v_0, ctx->v_1_tmp));
-
-    // y = ( A11 - A10 * A00^{-1} * A01 ) * x = S * x
-    PetscCall(VecWAXPY(y, -1.0, ctx->v_1_tmp, ctx->v_1));
-
-    PetscFunctionReturn(PETSC_SUCCESS);
-};
-
-/* PETSC TOOLS */
+/* 
+    PETSc general
+*/
 PetscErrorCode MatCreatePreallocator(PetscInt m, PetscInt n, Mat *A)
 {
     PetscFunctionBeginUser;

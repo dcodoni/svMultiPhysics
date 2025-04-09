@@ -250,9 +250,12 @@ const std::set<PreconditionerType> fsils_preconditioners = {
 
 /// @brief The list of PETSc preconditioners. 
 const std::set<PreconditionerType> petsc_preconditioners = {
-  PreconditionerType::PREC_PETSC_NESTEDBLOCK,
+  PreconditionerType::PREC_PETSC_SCR,
   PreconditionerType::PREC_PETSC_SIMPLE,
+  PreconditionerType::PREC_PETSC_SCHUR,
   PreconditionerType::PREC_PETSC_JACOBI,
+  PreconditionerType::PREC_PETSC_BJACOBI,
+  PreconditionerType::PREC_PETSC_AMG,
   PreconditionerType::PREC_PETSC_RCS
 };
 
@@ -274,9 +277,12 @@ const std::map<std::string,PreconditionerType> preconditioner_name_to_type =
   {"trilinos-ict", PreconditionerType::PREC_TRILINOS_ICT},
   {"trilinos-ml", PreconditionerType::PREC_TRILINOS_ML},
 
-  {"petsc-blocknested", PreconditionerType::PREC_PETSC_NESTEDBLOCK},
+  {"petsc-scr", PreconditionerType::PREC_PETSC_SCR},
   {"petsc-simple", PreconditionerType::PREC_PETSC_SIMPLE},
+  {"petsc-schur", PreconditionerType::PREC_PETSC_SCHUR},
   {"petsc-jacobi", PreconditionerType::PREC_PETSC_JACOBI},
+  {"petsc-bjacobi", PreconditionerType::PREC_PETSC_BJACOBI},
+  {"petsc-amg", PreconditionerType::PREC_PETSC_AMG},
   {"petsc-rcs", PreconditionerType::PREC_PETSC_RCS}
 };
 
@@ -293,9 +299,12 @@ const std::map<PreconditionerType, std::string> preconditioner_type_to_name {
   {PreconditionerType::PREC_TRILINOS_IC, "trilinos-ic"}, 
   {PreconditionerType::PREC_TRILINOS_IC, "trilinos-ict"}, 
   {PreconditionerType::PREC_TRILINOS_ML, "trilinos-ml"},
-  {PreconditionerType::PREC_PETSC_NESTEDBLOCK, "petsc-blocknested"},
+  {PreconditionerType::PREC_PETSC_SCR, "petsc-scr"},
   {PreconditionerType::PREC_PETSC_SIMPLE, "petsc-simple"},
+  {PreconditionerType::PREC_PETSC_SCHUR, "petsc-schur"},
   {PreconditionerType::PREC_PETSC_JACOBI, "petsc-jacobi"},
+  {PreconditionerType::PREC_PETSC_BJACOBI, "petsc-bjacobi"},
+  {PreconditionerType::PREC_PETSC_AMG, "petsc-amg"},
   {PreconditionerType::PREC_PETSC_RCS, "petsc-rcs"}
 };
 

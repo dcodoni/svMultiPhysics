@@ -55,6 +55,8 @@ void add_bc_mul(FSILS_lhsType& lhs, const BcopType op_Type, const int dof, const
   Vector<double> coef(lhs.nFaces); 
   Array<double> v(dof,lhs.nNo);
 
+  Array<double> david(dof,lhs.nNo);
+
   if (op_Type == BcopType::BCOP_TYPE_ADD) {
     for (int i = 0; i < lhs.nFaces; i++) {
       coef(i) = lhs.face[i].res;
