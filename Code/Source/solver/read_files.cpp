@@ -416,6 +416,8 @@ void read_bc(Simulation* simulation, EquationParameters* eq_params, eqType& lEq,
     int iFa = lBc.iFa;
 
     read_spatial_values(com_mod, com_mod.msh[iM], com_mod.msh[iM].fa[iFa], file_name, lBc);
+  } else {
+    throw std::runtime_error("[read_bc] Unknown spatial profile type '" + ctmp + "'.");
   }
 
   // Weak Dirichlet BC for fluid/FSI equations
@@ -1390,9 +1392,12 @@ void read_eq(Simulation* simulation, EquationParameters* eq_params, eqType& lEq)
 
     if (cplBC.schm != consts::CplBCType::cplBC_NA) { 
       if (cplBC.useGenBC) {
-        cplBC.binPath = eq_params->couple_to_genBC.zerod_code_file_path.value();
+        if (cplBC.binPath.size() == 0){
+          cplBC.binPath = eq_params->couple_to_genBC.zerod_code_file_path.value();
+        }
         cplBC.commuName = "GenBC.int";
         cplBC.nX = 0;
+        cplBC.xp.resize(cplBC.nX);
       } else if (cplBC.useSvZeroD) {
         cplBC.commuName = "svZeroD_interface.dat";
         cplBC.nX = 0;

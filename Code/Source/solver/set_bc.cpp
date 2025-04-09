@@ -31,6 +31,7 @@
 #include "set_bc.h"
 
 #include "all_fun.h"
+#include "baf_ini.h"
 #include "cmm.h"
 #include "consts.h"
 #include "eq_assem.h"
@@ -84,8 +85,7 @@ void calc_der_cpl_bc(ComMod& com_mod, const CmMod& cm_mod)
   // if (ALL(cplBC.fa.bGrp .EQ. cplBC_Dir)) RETURN
 
   // Determine current physics
-  auto& cDmn = com_mod.cDmn;
-  auto cPhys = eq.dmn[cDmn].phys;
+  auto cPhys = eq.phys;
 
   // Mechanical configuration in which to compute flowrate
   auto cfg_o = MechanicalConfigurationType::reference;
@@ -679,6 +679,7 @@ void set_bc_cpl(ComMod& com_mod, CmMod& cm_mod)
   using namespace consts;
 
   const int nsd = com_mod.nsd;
+  const int tnNo = com_mod.tnNo;
   auto& cplBC = com_mod.cplBC;
   auto& Yo = com_mod.Yo;
   auto& Yn = com_mod.Yn;
@@ -686,8 +687,7 @@ void set_bc_cpl(ComMod& com_mod, CmMod& cm_mod)
   auto& eq = com_mod.eq[iEq];
 
   // Determine current physics
-  auto& cDmn = com_mod.cDmn;
-  auto cPhys = eq.dmn[cDmn].phys;
+  auto cPhys = eq.phys;
 
   // Configuration in which to compute flowrate
   auto cfg_o = MechanicalConfigurationType::reference;
@@ -707,6 +707,14 @@ void set_bc_cpl(ComMod& com_mod, CmMod& cm_mod)
       auto& bc = eq.bc[iBc];
       int iFa = bc.iFa;
       int iM  = bc.iM;
+   
+      // recalculate the coupled area
+      faceType& lFa = com_mod.msh[iM].fa[iFa];
+      Vector<double> sA(com_mod.tnNo);
+      sA = 1.0;
+      double area = all_fun::integ(com_mod, cm_mod, lFa, sA);
+      baf_ini_ns::bc_ini(com_mod, cm_mod, eq.bc[iBc], lFa);
+
       int ptr = bc.cplBCptr;
 
       if (utils::btest(bc.bType,iBC_RCR)) {
@@ -746,7 +754,6 @@ void set_bc_cpl(ComMod& com_mod, CmMod& cm_mod)
         } 
         // Compute avg pressures at 3D Dirichlet boundaries at timesteps n and n+1
         else if (utils::btest(bc.bType,iBC_Dir)) {
-          double area = com_mod.msh[iM].fa[iFa].area;
           cplBC.fa[ptr].Po = all_fun::integ(com_mod, cm_mod, com_mod.msh[iM].fa[iFa], Yo, nsd) / area;
           cplBC.fa[ptr].Pn = all_fun::integ(com_mod, cm_mod, com_mod.msh[iM].fa[iFa], Yn, nsd) / area;
           cplBC.fa[ptr].Qo = 0.0;
@@ -1251,7 +1258,8 @@ void set_bc_dir_wl(ComMod& com_mod, const bcType& lBc, const mshType& lM, const 
         ubl(i,a) = ubg(i,Ac);
 
         if (com_mod.mvMsh) {
-          xbl(i,a) = xbl(i,a) + Dg(i+nsd,Ac);
+          // xbl(i,a) = xbl(i,a) + Dg(i+nsd,Ac);
+          xbl(i,a) = xbl(i,a) + Dg(i+nsd+1,Ac);
         }
       }
     }
