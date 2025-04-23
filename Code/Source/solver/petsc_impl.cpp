@@ -1834,7 +1834,6 @@ void PetscLinearAlgebra::PetscImpl::init_dir_and_coupneu_bc(ComMod &com_mod,
                 }
             }
             cc++;
-            std::cout << "mynNo: " << plhs.mynNo << " Face Nodes: " << face.nNo << " Face ID: " << faIn << std::endl;
         }
     }
 }
