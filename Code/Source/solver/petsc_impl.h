@@ -69,9 +69,10 @@ typedef struct {
     PetscBool created;  /* Whether mat and vec is created */
     const char *pre;      /* option prefix for different equations */
 
-    PetscInt  lpPts;    /* number of dofs with lumped parameter BC */
-    PetscInt *lpBC_l;   /* O2 index for dofs with lumped parameter BC */
-    PetscInt *lpBC_g;   /* PETSc index for dofs with lumped parameter BC */
+    PetscInt nResFaces; /* number of faces where Resistance BC is applied */
+    PetscInt *lpPts;    /* number of dofs with lumped parameter BC */
+    PetscInt **lpBC_l;   /* O2 index for dofs with lumped parameter BC */
+    PetscInt **lpBC_g;   /* PETSc index for dofs with lumped parameter BC */
 
     PetscInt  DirPts;   /* number of dofs with Dirichlet BC */
     PetscInt *DirBC;    /* PETSc index for dofs with Dirichlet BC */
@@ -79,14 +80,14 @@ typedef struct {
     /* _0 refer to velocity dofs when block-iterative procedure is used 
        _1 refer to pressure dof when block-iterative procedure is used 
     */
-    PetscInt  lpPts_0;
-    PetscInt *lpBC_l_0;
-    PetscInt *lpBC_g_0;
-    PetscReal *svFSI_lpBC_0;    /* svFSI lumped parameter BC for the velocity dofs */
-    PetscInt  lpPts_1;
-    PetscInt *lpBC_l_1;
-    PetscInt *lpBC_g_1;
-    PetscReal *svFSI_lpBC_1;    /* svFSI lumped parameter BC for the pressure dof */
+    PetscInt *lpPts_0;
+    PetscInt **lpBC_l_0;
+    PetscInt **lpBC_g_0;
+    PetscReal **svFSI_lpBC_0;    /* svFSI lumped parameter BC for the velocity dofs */
+    PetscInt *lpPts_1;
+    PetscInt **lpBC_l_1;
+    PetscInt **lpBC_g_1;
+    PetscReal **svFSI_lpBC_1;    /* svFSI lumped parameter BC for the pressure dof */
 
     PetscInt  DirPts_0;   
     PetscInt *DirBC_0;    
@@ -112,16 +113,18 @@ void petsc_initialize(const PetscInt nNo, const PetscInt mynNo,
     const PetscInt *svFSI_map, const PetscInt *svFSI_rowPtr, 
     const PetscInt *svFSI_colPtr, char *inp);
 
+// void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq, 
+//     const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC);
 void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq, 
-    const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC);
+     const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC, const PetscInt nFacesRes);
 
 void petsc_create_linearsolver(const consts::PreconditionerType lsType, const consts::PreconditionerType pcType, 
-    const PetscInt kSpace, const PetscInt maxIter, const PetscReal relTol, 
+    const BlockIterativePCparams pc_params, const PetscInt kSpace, const PetscInt maxIter, const PetscReal relTol, 
     const PetscReal absTol, const consts::EquationType phys, const PetscInt dof, 
     const PetscInt nnz, const PetscInt iEq, const PetscInt nEq);
 
 void petsc_set_values(const PetscInt dof, const PetscInt iEq, const PetscReal *R, 
-    const PetscReal *Val, const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC);
+    const PetscReal *Val, const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC);
 
 PetscErrorCode petsc_solve(PetscReal *resNorm,  PetscReal *initNorm,  PetscReal *dB, 
     PetscReal *execTime, bool *converged, PetscInt *numIter, 
@@ -135,10 +138,10 @@ PetscErrorCode petsc_create_lhs(const PetscInt, const PetscInt, const PetscInt,
                                 const PetscInt *, const PetscInt *);
 
 PetscErrorCode petsc_create_bc(const PetscInt, const PetscInt, const PetscReal *, 
-                               const PetscReal *);
+                               PetscReal**);
 
 PetscErrorCode petsc_create_splitbc(const PetscInt, const PetscInt, const PetscReal *, 
-                               const PetscReal *);
+                                    PetscReal **);
 
 PetscErrorCode petsc_create_vecmat(const PetscInt, const PetscInt, const PetscInt);
 
@@ -152,7 +155,7 @@ PetscErrorCode petsc_set_mat(const PetscInt, const PetscInt, const PetscReal *);
 
 PetscErrorCode petsc_set_splitmat(const PetscInt, const PetscInt, const PetscReal *);
 
-PetscErrorCode petsc_set_bc(const PetscInt, const PetscReal *, const PetscReal *);
+PetscErrorCode petsc_set_bc(const PetscInt, const PetscReal *, PetscReal**);
 
 PetscErrorCode petsc_set_splitbc(const PetscInt);
 

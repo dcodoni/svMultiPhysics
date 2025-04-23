@@ -105,7 +105,7 @@ void petsc_initialize(const PetscInt nNo, const PetscInt mynNo, const PetscInt n
     Create parallel vector and matrix data structures.
 */
 void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq,
-                               const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC)
+                               const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC, const PetscInt nFacesRes)                    
 {
     // PetscInt cEq = *iEq - 1;
     PetscInt cEq = iEq; // in Fortran, cEq = 1; in C++, cEq = 0;
@@ -117,6 +117,7 @@ void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const Pet
 
     PetscLogStagePush(stages[1]);
 
+    psol[cEq].nResFaces = nFacesRes;        
     if (psol[cEq].block_iterative_pc)
     {
         petsc_create_splitbc(dof, cEq, svFSI_DirBC, svFSI_lpBC); /* bc info is required for mat_create */
@@ -335,7 +336,7 @@ void petsc_create_linearsolver(const consts::SolverType lsType, const consts::Pr
     Set up the linear system.
 */
 void petsc_set_values(const PetscInt dof, const PetscInt iEq, const PetscReal *R,
-                      const PetscReal *Val, const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC)
+                      const PetscReal *Val, const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC)
 {
     // PetscInt cEq = *iEq - 1;
     PetscInt cEq = iEq; // in Fortran, cEq = 1; in C++, cEq = 0;
@@ -480,6 +481,7 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
             }
             R[plhs.map[i] * (dof) + dof-1] = array_1[i];
         }
+
         VecRestoreArray(lx_0, &array_0);
         VecRestoreArray(lx_1, &array_1);
         VecGhostRestoreLocalForm(svec[0], &lx_0);
@@ -544,8 +546,13 @@ void petsc_destroy_all(const PetscInt nEq)
 
             psol[cEq].created = PETSC_FALSE;
 
-            psol[cEq].lpPts = 0;
-            PetscFree2(psol[cEq].lpBC_l, psol[cEq].lpBC_g);
+            PetscFree(psol[cEq].lpPts);
+            for (PetscInt faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) {
+                PetscFree(psol[cEq].lpBC_l[faIn]);
+                PetscFree(psol[cEq].lpBC_g[faIn]);
+            }
+            PetscFree(psol[cEq].lpBC_l);
+            PetscFree(psol[cEq].lpBC_g);
 
             psol[cEq].DirPts = 0;
             PetscFree(psol[cEq].DirBC);
@@ -573,12 +580,21 @@ void petsc_destroy_all(const PetscInt nEq)
                 PetscFree(plhs.ghostltg_0);
                 PetscFree(plhs.ghostltg_1);
 
-                psol[cEq].lpPts_0 = 0;
-                psol[cEq].lpPts_1 = 0;
+                PetscFree(psol[cEq].lpPts_0);
+                PetscFree(psol[cEq].lpPts_1);
+                for (PetscInt faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) {
+                    PetscFree(psol[cEq].lpBC_l_0[faIn]);
+                    PetscFree(psol[cEq].lpBC_g_0[faIn]);
+                    PetscFree(psol[cEq].lpBC_l_1[faIn]);
+                    PetscFree(psol[cEq].lpBC_g_1[faIn]);
+                    PetscFree(psol[cEq].svFSI_lpBC_0[faIn]);
+                    PetscFree(psol[cEq].svFSI_lpBC_1[faIn]);
+                }
                 PetscFree(psol[cEq].lpBC_l_0); PetscFree(psol[cEq].lpBC_g_0);
                 PetscFree(psol[cEq].lpBC_l_1); PetscFree(psol[cEq].lpBC_g_1);
                 PetscFree(psol[cEq].svFSI_lpBC_0); 
                 PetscFree(psol[cEq].svFSI_lpBC_1);
+                psol[cEq].nResFaces = 0;
                 psol[cEq].DirPts_0 = 0;
                 psol[cEq].DirPts_1 = 0;
                 PetscFree(psol[cEq].DirBC_0); PetscFree(psol[cEq].svFSI_DirBC_0);
@@ -726,10 +742,10 @@ PetscErrorCode petsc_create_lhs(const PetscInt nNo, const PetscInt mynNo, const 
     Creating PETSc data structure for Dirichlet and lumped parameter BC with svFSI info.
 */
 PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
-                               const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC)
+                               const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC)
 {
     PetscInt i, j, cc, ii;
-    PetscInt *row1, *row2;
+    PetscInt *row1;
     PetscReal eps = 1.0e6 * __DBL_EPSILON__;
 
     PetscFunctionBeginUser;
@@ -756,30 +772,51 @@ PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
     }
 
     /* Find O2 and PETSc index of dofs with lumped parameter BC */
-    PetscCall(PetscMalloc1(plhs.mynNo * dof, &row2));
-    cc = 0;
-    for (i = 0; i < plhs.mynNo; i++)
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts));
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
     {
-        ii = i * dof;
-        for (j = 0; j < dof; j++)
+        cc = 0;
+        for (int i = 0; i < plhs.mynNo; ++i)
         {
-            if (PetscAbsReal(svFSI_lpBC[ii + j]) > eps)
+            int ii = i * dof;
+            for (int j = 0; j < dof; ++j)
             {
-                row1[cc] = ii + j;
-                row2[cc] = plhs.ltg[i] * dof + j;
-                cc++;
+                if (PetscAbsReal(svFSI_lpBC[faIn][ii + j]) > eps)
+                {
+                    cc++;
+                }
+            }
+        }
+        psol[cEq].lpPts[faIn] = cc;
+    }
+
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_l);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_g);
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscMalloc1(psol[cEq].lpPts[faIn], &psol[cEq].lpBC_l[faIn]); 
+        PetscMalloc1(psol[cEq].lpPts[faIn], &psol[cEq].lpBC_g[faIn]);
+    }
+
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        cc = 0;
+        for (int i = 0; i < plhs.mynNo; ++i)
+        {
+            int ii = i * dof;
+            for (int j = 0; j < dof; ++j)
+            {
+                if (PetscAbsReal(svFSI_lpBC[faIn][ii + j]) > eps)
+                {
+                    psol[cEq].lpBC_l[faIn][cc] = ii + j;
+                    psol[cEq].lpBC_g[faIn][cc] = plhs.ltg[i] * dof + j;
+                    cc++;
+                }
             }
         }
     }
-    PetscCall(PetscMalloc2(cc, &psol[cEq].lpBC_l, cc, &psol[cEq].lpBC_g));
-    psol[cEq].lpPts = cc;
-    for (i = 0; i < cc; i++)
-    {
-        psol[cEq].lpBC_l[i] = row1[i];
-        psol[cEq].lpBC_g[i] = row2[i];
-    }
+
     PetscCall(PetscFree(row1));
-    PetscCall(PetscFree(row2));
 
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -788,9 +825,9 @@ PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
     Creating split PETSc data structure for Dirichlet and lumped parameter BC with svFSI info.
 */
 PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
-                               const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC)
+                               const PetscReal *svFSI_DirBC, PetscReal **svFSI_lpBC)
 {
-    PetscInt i, j, cc, dd, ii, nvec;
+    PetscInt i, j, cc, dd, ii, nvec, faIn;
     PetscInt *row1_0, *row1_1, *row2_0, *row2_1;
     PetscInt local_size_0, local_size_1;
     PetscReal eps = 1.0e6 * __DBL_EPSILON__;
@@ -802,8 +839,8 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
 
     PetscCall(PetscMalloc1(local_size_0, &psol[cEq].svFSI_DirBC_0));
     PetscCall(PetscMalloc1(local_size_1, &psol[cEq].svFSI_DirBC_1));
-    PetscCall(PetscMalloc1(local_size_0, &psol[cEq].svFSI_lpBC_0));
-    PetscCall(PetscMalloc1(local_size_1, &psol[cEq].svFSI_lpBC_1));
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].svFSI_lpBC_0));
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].svFSI_lpBC_1));
 
     /* Find PETSc global index of dofs with Dirichlet BC */
     PetscCall(PetscMalloc1(plhs.mynNo * (dof-1), &row1_0));
@@ -814,16 +851,24 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
         ii = i * dof;
         for (j=0; j< dof-1; j++)
         {
-            psol[cEq].svFSI_lpBC_0[i * (dof - 1) + j] = svFSI_lpBC[ii+j];
             psol[cEq].svFSI_DirBC_0[i * (dof - 1) + j] = svFSI_DirBC[ii+j];
         }
+        psol[cEq].svFSI_DirBC_1[i] = svFSI_DirBC[ii+(dof-1)];
     }
 
-    for (i = 0; i < plhs.mynNo; i++)
-    {  
-        ii = i * dof;
-        psol[cEq].svFSI_lpBC_1[i] = svFSI_lpBC[ii+(dof-1)];
-        psol[cEq].svFSI_DirBC_1[i] = svFSI_DirBC[ii+(dof-1)];
+    for (faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscCall(PetscMalloc1(local_size_0, &psol[cEq].svFSI_lpBC_0[faIn]));
+        PetscCall(PetscMalloc1(local_size_1, &psol[cEq].svFSI_lpBC_1[faIn]));
+        for (i = 0; i < plhs.mynNo; i++)
+        {  
+            ii = i * dof;
+            for (j=0; j< dof-1; j++)
+            {
+                psol[cEq].svFSI_lpBC_0[faIn][i * (dof - 1) + j] = svFSI_lpBC[faIn][ii+j];
+            }
+            psol[cEq].svFSI_lpBC_1[faIn][i] = svFSI_lpBC[faIn][ii+(dof-1)];
+        }               
     }
 
     cc = 0;
@@ -863,52 +908,65 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
     }
 
     /* Find O2 and PETSc index of dofs with lumped parameter BC */
-    PetscCall(PetscMalloc1(plhs.mynNo * (dof - 1), &row2_0));
-    PetscCall(PetscMalloc1(plhs.mynNo, &row2_1));
-    cc = 0;
-    dd = 0;
-    for (i = 0; i < plhs.mynNo; i++)
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts_0));
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts_1));
+    for (faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) 
     {
-        ii = i * (dof - 1);
-        for (j = 0; j < (dof - 1); j++)
+        cc = 0;
+        dd = 0;
+        for (i = 0; i < plhs.mynNo; i++)
         {
-            if (PetscAbsReal(psol[cEq].svFSI_lpBC_0[ii + j]) > eps)
+            ii = i * (dof - 1);
+            for (j = 0; j < (dof - 1); j++)
             {
-                row1_0[cc] = ii + j;
-                row2_0[cc] = plhs.ltg[i] * (dof - 1) + j;
-                cc++;
+                if (PetscAbsReal(psol[cEq].svFSI_lpBC_0[faIn][ii + j]) > eps)
+                {
+                    cc++;
+                }
+            }
+            if (PetscAbsReal(psol[cEq].svFSI_lpBC_1[faIn][i]) > eps)
+            {
+                dd++;
+            }
+        }
+        psol[cEq].lpPts_0[faIn] = cc;
+        psol[cEq].lpPts_1[faIn] = dd;
+    }
+
+    PetscCall(PetscMalloc2(psol[cEq].nResFaces, &psol[cEq].lpBC_l_0, psol[cEq].nResFaces, &psol[cEq].lpBC_g_0));
+    PetscCall(PetscMalloc2(psol[cEq].nResFaces, &psol[cEq].lpBC_l_1, psol[cEq].nResFaces, &psol[cEq].lpBC_g_1));
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscCall(PetscMalloc2(psol[cEq].lpPts_0[faIn], &psol[cEq].lpBC_l_0[faIn], psol[cEq].lpPts_0[faIn], &psol[cEq].lpBC_g_0[faIn]));
+        PetscCall(PetscMalloc2(psol[cEq].lpPts_1[faIn], &psol[cEq].lpBC_l_1[faIn], psol[cEq].lpPts_1[faIn], &psol[cEq].lpBC_g_1[faIn]));
+    }
+    for (faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) 
+    {
+        cc = 0;
+        dd = 0;
+        for (i = 0; i < plhs.mynNo; i++)
+        {
+            ii = i * (dof - 1);
+            for (j = 0; j < (dof - 1); j++)
+            {
+                if (PetscAbsReal(psol[cEq].svFSI_lpBC_0[faIn][ii + j]) > eps)
+                {
+                    psol[cEq].lpBC_l_0[faIn][cc] = ii + j;
+                    psol[cEq].lpBC_g_0[faIn][cc] = plhs.ltg[i] * (dof - 1) + j;
+                    cc++;
+                }
+            }
+            if (PetscAbsReal(psol[cEq].svFSI_lpBC_1[faIn][i]) > eps)
+            {
+                psol[cEq].lpBC_l_1[faIn][dd] = i;
+                psol[cEq].lpBC_g_1[faIn][dd] = plhs.ltg[i];
+                dd++;
             }
         }
     }
-    for (i = 0; i < plhs.mynNo; i++)
-    {
-        if (PetscAbsReal(psol[cEq].svFSI_lpBC_1[i]) > eps)
-        {
-            row1_1[dd] = i;
-            row2_1[dd] = plhs.ltg[i];
-            dd++;
-        }
-    }
-
-    PetscCall(PetscMalloc2(cc, &psol[cEq].lpBC_l_0, cc, &psol[cEq].lpBC_g_0));
-    PetscCall(PetscMalloc2(dd, &psol[cEq].lpBC_l_1, dd, &psol[cEq].lpBC_g_1));
-    psol[cEq].lpPts_0 = cc;
-    psol[cEq].lpPts_1 = dd;
-    for (i = 0; i < cc; i++)
-    {
-        psol[cEq].lpBC_l_0[i] = row1_0[i];
-        psol[cEq].lpBC_g_0[i] = row2_0[i];
-    }
-    for (i = 0; i < dd; i++)
-    {
-        psol[cEq].lpBC_l_1[i] = row1_1[i];
-        psol[cEq].lpBC_g_1[i] = row2_1[i];
-    }
 
     PetscCall(PetscFree(row1_0));
-    PetscCall(PetscFree(row2_0));
     PetscCall(PetscFree(row1_1));
-    PetscCall(PetscFree(row2_1));
     
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -957,13 +1015,16 @@ PetscErrorCode petsc_create_vecmat(const PetscInt dof, const PetscInt cEq, const
         }
     }
     /* Points with lumped parameter BC */
-    for (i = 0; i < psol[cEq].lpPts; i++)
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; faIn++)
     {
-        row = psol[cEq].lpBC_g[i];
-        for (j = 0; j < psol[cEq].lpPts; j++)
+        for (i = 0; i < psol[cEq].lpPts[faIn]; i++)
         {
-            col = psol[cEq].lpBC_g[j];
-            PetscCall(MatSetValue(preallocator, row, col, 0.0, INSERT_VALUES));
+            row = psol[cEq].lpBC_g[faIn][i];
+            for (j = 0; j < psol[cEq].lpPts[faIn]; j++)
+            {
+                col = psol[cEq].lpBC_g[faIn][j];
+                PetscCall(MatSetValue(preallocator, row, col, 0.0, INSERT_VALUES));
+            }
         }
     }
     PetscCall(MatAssemblyBegin(preallocator, MAT_FINAL_ASSEMBLY));
@@ -1082,32 +1143,35 @@ PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, 
     }
 
     /* Points with lumped parameter BC */
-    for (i = 0; i < psol[cEq].lpPts_0; i++)
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
     {
-        row = psol[cEq].lpBC_g_0[i];
-        for (j = 0; j < psol[cEq].lpPts_0; j++)
+        for (i = 0; i < psol[cEq].lpPts_0[faIn]; i++)
         {
-            col = psol[cEq].lpBC_g_0[j];
-            PetscCall(MatSetValue(preallocator_00, row, col, 0.0, INSERT_VALUES));
+            row = psol[cEq].lpBC_g_0[faIn][i];
+            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            {
+                col = psol[cEq].lpBC_g_0[faIn][j];
+                PetscCall(MatSetValue(preallocator_00, row, col, 0.0, INSERT_VALUES));
+            }
+            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            {
+                col = psol[cEq].lpBC_g_1[faIn][j];
+                PetscCall(MatSetValue(preallocator_01, row, col, 0.0, INSERT_VALUES));
+            }
         }
-        for (j = 0; j < psol[cEq].lpPts_1; j++)
+        for (i = 0; i < psol[cEq].lpPts_1[faIn]; i++)
         {
-            col = psol[cEq].lpBC_g_1[j];
-            PetscCall(MatSetValue(preallocator_01, row, col, 0.0, INSERT_VALUES));
-        }
-    }
-    for (i = 0; i < psol[cEq].lpPts_1; i++)
-    {
-        row = psol[cEq].lpBC_g_1[i];
-        for (j = 0; j < psol[cEq].lpPts_0; j++)
-        {
-            col = psol[cEq].lpBC_g_0[j];
-            PetscCall(MatSetValue(preallocator_10, row, col, 0.0, INSERT_VALUES));
-        }
-        for (j = 0; j < psol[cEq].lpPts_1; j++)
-        {
-            col = psol[cEq].lpBC_g_1[j];
-            PetscCall(MatSetValue(preallocator_11, row, col, 0.0, INSERT_VALUES));
+            row = psol[cEq].lpBC_g_1[faIn][i];
+            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            {
+                col = psol[cEq].lpBC_g_0[faIn][j];
+                PetscCall(MatSetValue(preallocator_10, row, col, 0.0, INSERT_VALUES));
+            }
+            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            {
+                col = psol[cEq].lpBC_g_1[faIn][j];
+                PetscCall(MatSetValue(preallocator_11, row, col, 0.0, INSERT_VALUES));
+            }
         }
     }
 
@@ -1316,7 +1380,7 @@ PetscErrorCode petsc_set_splitmat(const PetscInt dof, const PetscInt cEq, const 
 /*
     Set up Dirichlet BC and resistance BC.
 */
-PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, const PetscReal *lpBC)
+PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, PetscReal** lpBC)
 {
     Vec x;
     PetscInt i, j, ii, jj, row, col;
@@ -1325,16 +1389,19 @@ PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, const Pe
     PetscFunctionBeginUser;
 
     /* Apply lumped parameter BC by augmenting the matrix A. */
-    for (i = 0; i < psol[cEq].lpPts; i++)
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; faIn++)
     {
-        ii = psol[cEq].lpBC_l[i];
-        row = psol[cEq].lpBC_g[i];
-        for (j = 0; j < psol[cEq].lpPts; j++)
+        for (i = 0; i < psol[cEq].lpPts[faIn]; i++)
         {
-            jj = psol[cEq].lpBC_l[j];
-            col = psol[cEq].lpBC_g[j];
-            value = lpBC[ii] * lpBC[jj];
-            PetscCall(MatSetValue(psol[cEq].A, row, col, value, ADD_VALUES));
+            ii = psol[cEq].lpBC_l[faIn][i];
+            row = psol[cEq].lpBC_g[faIn][i];
+            for (j = 0; j < psol[cEq].lpPts[faIn]; j++)
+            {
+                jj = psol[cEq].lpBC_l[faIn][j];
+                col = psol[cEq].lpBC_g[faIn][j];
+                value = lpBC[faIn][ii] * lpBC[faIn][jj];
+                PetscCall(MatSetValue(psol[cEq].A, row, col, value, ADD_VALUES));
+            }
         }
     }
 
@@ -1367,45 +1434,47 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq)
     PetscFunctionBeginUser;
 
     /* Points with lumped parameter BC */
-    for (i = 0; i < psol[cEq].lpPts_0; i++)
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; faIn++)
     {
-        ii = psol[cEq].lpBC_l_0[i];
-        row = psol[cEq].lpBC_g_0[i];
-        for (j = 0; j < psol[cEq].lpPts_0; j++)
+        for (i = 0; i < psol[cEq].lpPts_0[faIn]; i++)
         {
-            jj = psol[cEq].lpBC_l_0[j];
-            col = psol[cEq].lpBC_g_0[j];
-            value = psol[cEq].svFSI_lpBC_0[ii] * psol[cEq].svFSI_lpBC_0[jj];
-            PetscCall(MatSetValue(psol[cEq].A_mn[0], row, col, value, ADD_VALUES));
+            ii = psol[cEq].lpBC_l_0[faIn][i];
+            row = psol[cEq].lpBC_g_0[faIn][i];
+            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            {
+                jj = psol[cEq].lpBC_l_0[faIn][j];
+                col = psol[cEq].lpBC_g_0[faIn][j];
+                value = psol[cEq].svFSI_lpBC_0[faIn][ii] * psol[cEq].svFSI_lpBC_0[faIn][jj];
+                PetscCall(MatSetValue(psol[cEq].A_mn[0], row, col, value, ADD_VALUES));
+            }
+            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            {
+                jj = psol[cEq].lpBC_l_1[faIn][j];
+                col = psol[cEq].lpBC_g_1[faIn][j];
+                value = psol[cEq].svFSI_lpBC_0[faIn][ii] * psol[cEq].svFSI_lpBC_1[faIn][jj];
+                PetscCall(MatSetValue(psol[cEq].A_mn[1], row, col, value, ADD_VALUES));
+            }
         }
-        for (j = 0; j < psol[cEq].lpPts_1; j++)
+        for (i = 0; i < psol[cEq].lpPts_1[faIn]; i++)
         {
-            jj = psol[cEq].lpBC_l_1[j];
-            col = psol[cEq].lpBC_g_1[j];
-            value = psol[cEq].svFSI_lpBC_0[ii] * psol[cEq].svFSI_lpBC_1[jj];
-            PetscCall(MatSetValue(psol[cEq].A_mn[1], row, col, value, ADD_VALUES));
+            ii = psol[cEq].lpBC_l_1[faIn][i];
+            row = psol[cEq].lpBC_g_1[faIn][i];
+            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            {
+                jj = psol[cEq].lpBC_l_0[faIn][j];
+                col = psol[cEq].lpBC_g_0[faIn][j];
+                value = psol[cEq].svFSI_lpBC_1[faIn][ii] * psol[cEq].svFSI_lpBC_0[faIn][jj];
+                PetscCall(MatSetValue(psol[cEq].A_mn[2], row, col, value, ADD_VALUES));
+            }
+            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            {
+                jj = psol[cEq].lpBC_l_1[faIn][j];
+                col = psol[cEq].lpBC_g_1[faIn][j];
+                value = psol[cEq].svFSI_lpBC_1[faIn][ii] * psol[cEq].svFSI_lpBC_1[faIn][jj];
+                PetscCall(MatSetValue(psol[cEq].A_mn[3], row, col, value, ADD_VALUES));
+            }
         }
     }
-    for (i = 0; i < psol[cEq].lpPts_1; i++)
-    {
-        ii = psol[cEq].lpBC_l_1[i];
-        row = psol[cEq].lpBC_g_1[i];
-        for (j = 0; j < psol[cEq].lpPts_0; j++)
-        {
-            jj = psol[cEq].lpBC_l_0[j];
-            col = psol[cEq].lpBC_g_0[j];
-            value = psol[cEq].svFSI_lpBC_1[ii] * psol[cEq].svFSI_lpBC_0[jj];
-            PetscCall(MatSetValue(psol[cEq].A_mn[2], row, col, value, ADD_VALUES));
-        }
-        for (j = 0; j < psol[cEq].lpPts_1; j++)
-        {
-            jj = psol[cEq].lpBC_l_1[j];
-            col = psol[cEq].lpBC_g_1[j];
-            value = psol[cEq].svFSI_lpBC_1[ii] * psol[cEq].svFSI_lpBC_1[jj];
-            PetscCall(MatSetValue(psol[cEq].A_mn[3], row, col, value, ADD_VALUES));
-        }
-    }
-
     PetscCall(MatAssemblyBegin(psol[cEq].A_mn[0], MAT_FINAL_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[0], MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyBegin(psol[cEq].A_mn[1], MAT_FINAL_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[1], MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyBegin(psol[cEq].A_mn[2], MAT_FINAL_ASSEMBLY)); PetscCall(MatAssemblyEnd(psol[cEq].A_mn[2], MAT_FINAL_ASSEMBLY));
@@ -1645,7 +1714,10 @@ public:
     Array<double> R_;
 
     // Factor for Lumped Parameter BCs
-    Array<double> V_;
+    // Array<double> V_;
+    // std::vector<Array<double>> lpVec;
+    PetscInt nFacesRes;
+    PetscReal** lpVec;
 };
 
 bool PetscLinearAlgebra::PetscImpl::petsc_initialized = false;
@@ -1665,6 +1737,7 @@ void PetscLinearAlgebra::PetscImpl::init_dir_and_coupneu_bc(ComMod &com_mod,
     using namespace fsi_linear_solver;
 
     int dof = com_mod.dof;
+    int mynNo = com_mod.tnNo;
     auto &lhs = com_mod.lhs;
 
     if (lhs.nFaces != 0)
@@ -1726,14 +1799,29 @@ void PetscLinearAlgebra::PetscImpl::init_dir_and_coupneu_bc(ComMod &com_mod,
         }
     }
 
-    V_ = 0.0;
+    // V_ = 0.0;
     bool isCoupledBC = false;
+    PetscInt cc = 0;
 
     for (int faIn = 0; faIn < lhs.nFaces; faIn++)
     {
         auto &face = lhs.face[faIn];
         if (face.coupledFlag)
+        { 
+            cc++;
+        }
+    }
+    
+    nFacesRes = cc;
+
+    PetscMalloc1(nFacesRes, &lpVec);
+    cc = 0;
+    for (int faIn = 0; faIn < lhs.nFaces; faIn++)
+    {
+        auto &face = lhs.face[faIn];
+        if (face.coupledFlag)
         {
+            PetscMalloc1(mynNo * dof, &lpVec[cc]);
             isCoupledBC = true;
             int faDof = std::min(face.dof, dof);
 
@@ -1742,9 +1830,11 @@ void PetscLinearAlgebra::PetscImpl::init_dir_and_coupneu_bc(ComMod &com_mod,
                 int Ac = face.glob(a);
                 for (int i = 0; i < faDof; i++)
                 {
-                    V_(i, Ac) = V_(i, Ac) + sqrt(fabs(res(faIn))) * face.val(i, a);
+                    lpVec[cc][Ac * dof + i] = sqrt(fabs(res(faIn))) * face.val(i, a);
                 }
             }
+            cc++;
+            std::cout << "mynNo: " << plhs.mynNo << " Face Nodes: " << face.nNo << " Face ID: " << faIn << std::endl;
         }
     }
 }
@@ -1800,15 +1890,15 @@ void PetscLinearAlgebra::PetscImpl::set_preconditioner(consts::PreconditionerTyp
 void PetscLinearAlgebra::PetscImpl::solve(ComMod &com_mod, eqType &lEq, const Vector<int> &incL, const Vector<double> &res)
 {
     W_.resize(com_mod.dof, com_mod.tnNo);
-    V_.resize(com_mod.dof, com_mod.tnNo);
+    // V_.resize(com_mod.dof, com_mod.tnNo);
 
     init_dir_and_coupneu_bc(com_mod, incL, res);
 
     // only excute once for each equation
     //
-    petsc_create_linearsystem(com_mod.dof, com_mod.cEq, com_mod.nEq, W_.data(), V_.data());
+    petsc_create_linearsystem(com_mod.dof, com_mod.cEq, com_mod.nEq, W_.data(), lpVec, nFacesRes);
 
-    petsc_set_values(com_mod.dof, com_mod.cEq, com_mod.R.data(), com_mod.Val.data(), W_.data(), V_.data());
+    petsc_set_values(com_mod.dof, com_mod.cEq, com_mod.R.data(), com_mod.Val.data(), W_.data(), lpVec);
 
     petsc_solve(&lEq.FSILS.RI.fNorm, &lEq.FSILS.RI.iNorm, &lEq.FSILS.RI.dB, &lEq.FSILS.RI.callD,
                 &lEq.FSILS.RI.suc, &lEq.FSILS.RI.itr, com_mod.R.data(), lEq.FSILS.RI.mItr, com_mod.dof, com_mod.cEq);
@@ -2207,7 +2297,7 @@ PetscErrorCode BlockIterative_Preconditioner::set_internal_pc_type(PC_LSCtx *int
             PetscCall(PCHYPRESetType(pc_internal, "boomeramg"));
         }
         PetscCall(PCSetFromOptions(pc_internal));
-        return 0;
+        return PETSC_SUCCESS;
     } else {
         throw std::runtime_error("[SCR_PC]: Unknown PC type: " + pc_type + " for internal solver.");
     }
