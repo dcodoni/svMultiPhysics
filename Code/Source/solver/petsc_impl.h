@@ -74,27 +74,44 @@ typedef struct {
     PetscInt **lpBC_l;   /* O2 index for dofs with lumped parameter BC */
     PetscInt **lpBC_g;   /* PETSc index for dofs with lumped parameter BC */
 
+    /*
+      Global arrays for the lumped parameter BC
+    */
+    PetscInt *lpPts_all;   /* same as lpPts but gathering data from all tasks */
+    PetscInt **lpBC_l_all; /* same as lpBC_l but gathering data from all tasks */
+    PetscInt **lpBC_g_all; /* same as lpBC_g but gathering data from all tasks */
+    PetscReal **lpBC_Val_all; /* svFSI lumped parameter BC per face from all tasks */
+
     PetscInt  DirPts;   /* number of dofs with Dirichlet BC */
     PetscInt *DirBC;    /* PETSc index for dofs with Dirichlet BC */
 
-    /* _0 refer to velocity dofs when block-iterative procedure is used 
-       _1 refer to pressure dof when block-iterative procedure is used 
+    /* 
+      _0 refer to velocity dofs when block-iterative procedure is used 
+      _1 refer to pressure dof when block-iterative procedure is used 
     */
     PetscInt *lpPts_0;
     PetscInt **lpBC_l_0;
     PetscInt **lpBC_g_0;
-    PetscReal **svFSI_lpBC_0;    /* svFSI lumped parameter BC for the velocity dofs */
+    PetscReal **svFSI_lpBC_0; /* svFSI lumped parameter BC for the velocity dofs */
+    PetscInt *lpPts_0_all;   
+    PetscInt **lpBC_l_0_all; 
+    PetscInt **lpBC_g_0_all; 
+    PetscReal **lpBC_Val_0_all;
     PetscInt *lpPts_1;
     PetscInt **lpBC_l_1;
     PetscInt **lpBC_g_1;
-    PetscReal **svFSI_lpBC_1;    /* svFSI lumped parameter BC for the pressure dof */
+    PetscReal **svFSI_lpBC_1; /* svFSI lumped parameter BC for the pressure dof */
+    PetscInt *lpPts_1_all;   
+    PetscInt **lpBC_l_1_all; 
+    PetscInt **lpBC_g_1_all; 
+    PetscReal **lpBC_Val_1_all;
 
     PetscInt  DirPts_0;   
     PetscInt *DirBC_0;    
-    PetscReal *svFSI_DirBC_0;    /* svFSI Dirichlet BC for the velocity dofs */
+    PetscReal *svFSI_DirBC_0; /* svFSI Dirichlet BC for the velocity dofs */
     PetscInt  DirPts_1;   
     PetscInt *DirBC_1;    
-    PetscReal *svFSI_DirBC_1;    /* svFSI Dirichlet BC for the pressure dof */
+    PetscReal *svFSI_DirBC_1; /* svFSI Dirichlet BC for the pressure dof */
 
     Vec       b;        /* rhs/solution vector of owned vertices */
     Vec       b_n[2];   /* rhs/solution subvectors of owned vertices */
@@ -115,10 +132,10 @@ void petsc_initialize(const PetscInt nNo, const PetscInt mynNo,
 
 // void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq, 
 //     const PetscReal *svFSI_DirBC, const PetscReal *svFSI_lpBC);
-void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq, 
+void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq, const PetscInt nTask,
      const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC, const PetscInt nFacesRes);
 
-void petsc_create_linearsolver(const consts::PreconditionerType lsType, const consts::PreconditionerType pcType, 
+void petsc_create_linearsolver(const consts::SolverType lsType, const consts::PreconditionerType pcType, 
     const BlockIterativePCparams pc_params, const PetscInt kSpace, const PetscInt maxIter, const PetscReal relTol, 
     const PetscReal absTol, const consts::EquationType phys, const PetscInt dof, 
     const PetscInt nnz, const PetscInt iEq, const PetscInt nEq);
@@ -137,11 +154,11 @@ PetscErrorCode petsc_create_lhs(const PetscInt, const PetscInt, const PetscInt,
                                 const PetscInt *, const PetscInt *, 
                                 const PetscInt *, const PetscInt *);
 
-PetscErrorCode petsc_create_bc(const PetscInt, const PetscInt, const PetscReal *, 
-                               PetscReal**);
+PetscErrorCode petsc_create_bc(const PetscInt, const PetscInt, const PetscInt,
+                               const PetscReal *, PetscReal**);
 
-PetscErrorCode petsc_create_splitbc(const PetscInt, const PetscInt, const PetscReal *, 
-                                    PetscReal **);
+PetscErrorCode petsc_create_splitbc(const PetscInt, const PetscInt, const PetscInt,
+                                    const PetscReal *, PetscReal **);
 
 PetscErrorCode petsc_create_vecmat(const PetscInt, const PetscInt, const PetscInt);
 

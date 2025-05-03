@@ -104,7 +104,7 @@ void petsc_initialize(const PetscInt nNo, const PetscInt mynNo, const PetscInt n
 /*
     Create parallel vector and matrix data structures.
 */
-void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq,
+void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const PetscInt nEq, const PetscInt nTask,
                                const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC, const PetscInt nFacesRes)                    
 {
     // PetscInt cEq = *iEq - 1;
@@ -120,11 +120,11 @@ void petsc_create_linearsystem(const PetscInt dof, const PetscInt iEq, const Pet
     psol[cEq].nResFaces = nFacesRes;        
     if (psol[cEq].block_iterative_pc)
     {
-        petsc_create_splitbc(dof, cEq, svFSI_DirBC, svFSI_lpBC); /* bc info is required for mat_create */
+        petsc_create_splitbc(dof, cEq, nTask, svFSI_DirBC, svFSI_lpBC); /* bc info is required for mat_create */
         petsc_create_splitvecmat(dof, cEq, nEq);
     } else 
     {
-        petsc_create_bc(dof, cEq, svFSI_DirBC, svFSI_lpBC); /* bc info is required for mat_create */
+        petsc_create_bc(dof, cEq, nTask, svFSI_DirBC, svFSI_lpBC); /* bc info is required for mat_create */
         petsc_create_vecmat(dof, cEq, nEq);
     }
     psol[cEq].created = PETSC_TRUE;
@@ -421,8 +421,28 @@ PetscErrorCode petsc_solve(PetscReal *resNorm, PetscReal *initNorm, PetscReal *d
         KSPSetResidualHistory(psol[cEq].ksp, a, na, PETSC_TRUE);
     }
 
+    // PetscReal eig_max, eig_min, cond_num;
+
+    // // Enable computation of extreme singular values
+    // PetscCall(KSPSetComputeSingularValues(psol[cEq].ksp, PETSC_TRUE));
+
+    // Set up and solve
     KSPSetUp(psol[cEq].ksp);
     KSPSolve(psol[cEq].ksp, psol[cEq].b, psol[cEq].b);
+
+    // Post-process results
+    // PetscInt its;
+    // PetscCall(KSPGetIterationNumber(psol[cEq].ksp, &its));
+    // PetscReal resnorm;
+    // PetscCall(KSPGetResidualNorm(psol[cEq].ksp, &resnorm));
+
+    // Now compute eigenvalues
+    // PetscCall(KSPComputeExtremeSingularValues(psol[cEq].ksp, &eig_max, &eig_min));
+
+    // PetscPrintf(MPI_COMM_WORLD, "  --- KSP: %d, %e \n", its, resnorm);
+    // cond_num = eig_max / eig_min;
+    // PetscPrintf(MPI_COMM_WORLD, "  --- KSP: Max Eigen = %g, Min Eigen = %g\n", eig_max, eig_min);
+    // PetscPrintf(MPI_COMM_WORLD, "  --- KSP: Condition Number Estimate %g\n", cond_num);
 
     /* Rescale solution for RCS preconditioner */
     if (psol[cEq].rcs)
@@ -547,12 +567,19 @@ void petsc_destroy_all(const PetscInt nEq)
             psol[cEq].created = PETSC_FALSE;
 
             PetscFree(psol[cEq].lpPts);
+            PetscFree(psol[cEq].lpPts_all);
             for (PetscInt faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) {
                 PetscFree(psol[cEq].lpBC_l[faIn]);
                 PetscFree(psol[cEq].lpBC_g[faIn]);
+                PetscFree(psol[cEq].lpBC_l_all[faIn]);
+                PetscFree(psol[cEq].lpBC_g_all[faIn]);
+                PetscFree(psol[cEq].lpBC_Val_all[faIn]);
             }
             PetscFree(psol[cEq].lpBC_l);
             PetscFree(psol[cEq].lpBC_g);
+            PetscFree(psol[cEq].lpBC_l_all);
+            PetscFree(psol[cEq].lpBC_g_all);
+            PetscFree(psol[cEq].lpBC_Val_all);
 
             psol[cEq].DirPts = 0;
             PetscFree(psol[cEq].DirBC);
@@ -582,6 +609,8 @@ void petsc_destroy_all(const PetscInt nEq)
 
                 PetscFree(psol[cEq].lpPts_0);
                 PetscFree(psol[cEq].lpPts_1);
+                PetscFree(psol[cEq].lpPts_0_all);
+                PetscFree(psol[cEq].lpPts_1_all);
                 for (PetscInt faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) {
                     PetscFree(psol[cEq].lpBC_l_0[faIn]);
                     PetscFree(psol[cEq].lpBC_g_0[faIn]);
@@ -589,11 +618,21 @@ void petsc_destroy_all(const PetscInt nEq)
                     PetscFree(psol[cEq].lpBC_g_1[faIn]);
                     PetscFree(psol[cEq].svFSI_lpBC_0[faIn]);
                     PetscFree(psol[cEq].svFSI_lpBC_1[faIn]);
+
+                    PetscFree(psol[cEq].lpBC_l_0_all[faIn]);
+                    PetscFree(psol[cEq].lpBC_g_0_all[faIn]);
+                    PetscFree(psol[cEq].lpBC_l_1_all[faIn]);
+                    PetscFree(psol[cEq].lpBC_g_1_all[faIn]);
+                    PetscFree(psol[cEq].lpBC_Val_0_all[faIn]);
+                    PetscFree(psol[cEq].lpBC_Val_1_all[faIn]);
                 }
                 PetscFree(psol[cEq].lpBC_l_0); PetscFree(psol[cEq].lpBC_g_0);
                 PetscFree(psol[cEq].lpBC_l_1); PetscFree(psol[cEq].lpBC_g_1);
+                PetscFree(psol[cEq].lpBC_l_0_all); PetscFree(psol[cEq].lpBC_g_0_all);
+                PetscFree(psol[cEq].lpBC_l_1_all); PetscFree(psol[cEq].lpBC_g_1_all);
                 PetscFree(psol[cEq].svFSI_lpBC_0); 
                 PetscFree(psol[cEq].svFSI_lpBC_1);
+                PetscFree(psol[cEq].lpBC_Val_0_all); PetscFree(psol[cEq].lpBC_Val_1_all);
                 psol[cEq].nResFaces = 0;
                 psol[cEq].DirPts_0 = 0;
                 psol[cEq].DirPts_1 = 0;
@@ -741,7 +780,7 @@ PetscErrorCode petsc_create_lhs(const PetscInt nNo, const PetscInt mynNo, const 
 /*
     Creating PETSc data structure for Dirichlet and lumped parameter BC with svFSI info.
 */
-PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
+PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq, const PetscInt nTask,
                                const PetscReal *svFSI_DirBC, PetscReal** svFSI_lpBC)
 {
     PetscInt i, j, cc, ii;
@@ -772,31 +811,65 @@ PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
     }
 
     /* Find O2 and PETSc index of dofs with lumped parameter BC */
+    // PetscInt *nShared;
+    // PetscInt *tmp;
+    // PetscMalloc1(psol[cEq].nResFaces, &nShared);
+    // PetscMalloc1(psol[cEq].nResFaces, &tmp);
+
     PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts));
     for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
-    {
+    {   
+        // nShared[faIn] = 0; // number of tasks count for each face
         cc = 0;
-        for (int i = 0; i < plhs.mynNo; ++i)
+        for (int i = 0; i < plhs.mynNo; ++i) // Loop only on the owned vertices. This will avoid
+                                             // counting the ghost vertices twice.
         {
             int ii = i * dof;
             for (int j = 0; j < dof; ++j)
             {
                 if (PetscAbsReal(svFSI_lpBC[faIn][ii + j]) > eps)
                 {
+                    // nShared[faIn] = 1;
                     cc++;
                 }
             }
         }
         psol[cEq].lpPts[faIn] = cc;
+        // tmp[faIn] = nShared[faIn];
     }
+    // PetscCallMPI(MPI_Allreduce(tmp, nShared, psol[cEq].nResFaces, MPI_INT, MPI_SUM, MPI_COMM_WORLD));
 
     PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_l);
     PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_g);
+    PetscReal **tmpVal;
+    PetscMalloc1(psol[cEq].nResFaces, &tmpVal);
+    // cc = 0; // count for the number of faces with more than one task
     for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
     {
+        // if (nShared[faIn] > 1) cc++;
+        // if (psol[cEq].lpPts[faIn] > 0) 
+        // {
+        // Automatically PETSc allocate memory for the arrays and 
+        // set the memomry to nullptr if the size is 0.
         PetscMalloc1(psol[cEq].lpPts[faIn], &psol[cEq].lpBC_l[faIn]); 
         PetscMalloc1(psol[cEq].lpPts[faIn], &psol[cEq].lpBC_g[faIn]);
+        PetscMalloc1(psol[cEq].lpPts[faIn], &tmpVal[faIn]);
+        // }
+        // else
+        // {
+        //     psol[cEq].lpBC_l[faIn] = NULL;
+        //     psol[cEq].lpBC_g[faIn] = NULL;
+        // }
     }
+
+    // if (cc > 0) 
+    // {
+    // }
+    // else 
+    // {
+    //     psol[cEq].lpBC_l_all = NULL;
+    //     psol[cEq].lpBC_g_all = NULL;
+    // }
 
     for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
     {
@@ -810,12 +883,109 @@ PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
                 {
                     psol[cEq].lpBC_l[faIn][cc] = ii + j;
                     psol[cEq].lpBC_g[faIn][cc] = plhs.ltg[i] * dof + j;
+                    tmpVal[faIn][cc] = svFSI_lpBC[faIn][ii + j];
                     cc++;
                 }
             }
         }
     }
 
+    /* 
+        Handling task-shared faces in a general way by creating a global vector 
+        to loop against when the node-to-node multiplication is computed 
+    */
+    // The procedure is generalized so it can handle both cases:
+    // either the face is shared by more than one task or not.
+    // The method consists in looping over the number of points owned
+    // by each task and then using the global vector to loop against. 
+    // When the face is not shared with other tasks, the global vector is
+    // the same as the local vector. All of this is possible because
+    // PETSc automatically set the array to nullptr if the size is 0 
+    // and MPI functions handle this case by not allocating any memory.
+    // No need to differentiate between the two cases and each task will 
+    // have its own local vector and global vector for each face where 
+    // the resistance boundary condition is applied.
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_l_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_g_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_Val_all);
+    PetscInt **lpPts_per_task; // this contains the number of points on each task for each face
+    PetscMalloc1(psol[cEq].nResFaces, &lpPts_per_task);
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscMalloc1(nTask, &lpPts_per_task[faIn]);
+        // For each face, we need to know how many points are on each task
+        PetscCallMPI(MPI_Allgather(&psol[cEq].lpPts[faIn], 1, MPIU_INT, lpPts_per_task[faIn], 1, MPIU_INT, MPI_COMM_WORLD));
+    }
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts_all));
+    // this is the total number of points on each face (considering all tasks contribution)
+    PetscCallMPI(MPI_Allreduce(psol[cEq].lpPts, psol[cEq].lpPts_all, psol[cEq].nResFaces, MPIU_INT, MPI_SUM, MPI_COMM_WORLD));
+
+    // recvcounts and displs are used to prepare the data for mpi_allgatherv 
+    // they provide the number of points on each task and the displacement/offset
+    // for each task.
+    PetscInt *recvcounts;
+    PetscInt *displs;
+    PetscMalloc1(nTask, &recvcounts);
+    PetscMalloc1(nTask, &displs);
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscInt total_n = 0;
+        PetscCall(PetscArrayzero(recvcounts, nTask));
+        PetscCall(PetscArrayzero(displs, nTask));
+        for (PetscInt i = 0; i < nTask; ++i) {
+            recvcounts[i] = lpPts_per_task[faIn][i];
+            displs[i] = total_n;
+            total_n += lpPts_per_task[faIn][i];
+        }
+
+        // if (nShared[faIn] > 1)
+        // {
+
+        // total_n should be the same as psol[cEq].lpPts_all[faIn]
+        // this check should be done for debugging purpose only
+        // remove it in the future
+        if (total_n != psol[cEq].lpPts_all[faIn])
+        {
+            PetscPrintf(MPI_COMM_WORLD, "ERROR <PETSC_CREATE_BC>: "
+                                        "total_n != psol[cEq].lpPts_all[faIn]\n");
+            PetscPrintf(MPI_COMM_WORLD, "total_n = %d, psol[cEq].lpPts_all[faIn] = %d\n",
+                        total_n, psol[cEq].lpPts_all[faIn]);
+            PetscCall(PetscFree(recvcounts));
+            PetscCall(PetscFree(displs));
+            PetscCall(PetscFree(lpPts_per_task));
+            PetscCall(PetscFree(row1));
+            return PETSC_ERR_ARG_WRONGSTATE;
+        }
+         
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_all[faIn], &psol[cEq].lpBC_l_all[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_all[faIn], &psol[cEq].lpBC_g_all[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_all[faIn], &psol[cEq].lpBC_Val_all[faIn]));
+
+        // Step 3: Allgather the data:
+        // 1. gather local nodes numbering from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(psol[cEq].lpBC_l[faIn], psol[cEq].lpPts[faIn], MPIU_INT,
+            psol[cEq].lpBC_l_all[faIn], recvcounts, displs, MPIU_INT, MPI_COMM_WORLD)); 
+        // 2. gather global nodes numbering from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(psol[cEq].lpBC_g[faIn], psol[cEq].lpPts[faIn], MPIU_INT,
+            psol[cEq].lpBC_g_all[faIn], recvcounts, displs, MPIU_INT, MPI_COMM_WORLD));
+        // 3. gather values from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(tmpVal[faIn], psol[cEq].lpPts[faIn], MPIU_REAL,
+            psol[cEq].lpBC_Val_all[faIn], recvcounts, displs, MPIU_REAL, MPI_COMM_WORLD));
+    }
+
+    // free all temporary memory allocated. I think I just need to keep the global
+    // arrays (lpBC_l_all, lpBC_g_all, lpBC_Val_all, lpPts_all) for the rest of the code.
+    // need to free lpPts_per_task, tmpVal, recvcounts, displs
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscCall(PetscFree(lpPts_per_task[faIn]));
+        PetscCall(PetscFree(tmpVal[faIn]));
+    }
+    PetscCall(PetscFree(lpPts_per_task));
+    PetscCall(PetscFree(tmpVal));
+    PetscCall(PetscFree(recvcounts));
+    PetscCall(PetscFree(displs));
+    
     PetscCall(PetscFree(row1));
 
     PetscFunctionReturn(PETSC_SUCCESS);
@@ -824,7 +994,7 @@ PetscErrorCode petsc_create_bc(const PetscInt dof, const PetscInt cEq,
 /*
     Creating split PETSc data structure for Dirichlet and lumped parameter BC with svFSI info.
 */
-PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
+PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq, const PetscInt nTask,
                                const PetscReal *svFSI_DirBC, PetscReal **svFSI_lpBC)
 {
     PetscInt i, j, cc, dd, ii, nvec, faIn;
@@ -935,10 +1105,16 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
 
     PetscCall(PetscMalloc2(psol[cEq].nResFaces, &psol[cEq].lpBC_l_0, psol[cEq].nResFaces, &psol[cEq].lpBC_g_0));
     PetscCall(PetscMalloc2(psol[cEq].nResFaces, &psol[cEq].lpBC_l_1, psol[cEq].nResFaces, &psol[cEq].lpBC_g_1));
+    PetscReal **tmpVal0;
+    PetscReal **tmpVal1;
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &tmpVal0));
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &tmpVal1));
     for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
     {
         PetscCall(PetscMalloc2(psol[cEq].lpPts_0[faIn], &psol[cEq].lpBC_l_0[faIn], psol[cEq].lpPts_0[faIn], &psol[cEq].lpBC_g_0[faIn]));
         PetscCall(PetscMalloc2(psol[cEq].lpPts_1[faIn], &psol[cEq].lpBC_l_1[faIn], psol[cEq].lpPts_1[faIn], &psol[cEq].lpBC_g_1[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_0[faIn], &tmpVal0[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_1[faIn], &tmpVal1[faIn]));
     }
     for (faIn = 0; faIn < psol[cEq].nResFaces; ++faIn) 
     {
@@ -953,6 +1129,7 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
                 {
                     psol[cEq].lpBC_l_0[faIn][cc] = ii + j;
                     psol[cEq].lpBC_g_0[faIn][cc] = plhs.ltg[i] * (dof - 1) + j;
+                    tmpVal0[faIn][cc] = psol[cEq].svFSI_lpBC_0[faIn][ii + j];
                     cc++;
                 }
             }
@@ -960,10 +1137,145 @@ PetscErrorCode petsc_create_splitbc(const PetscInt dof, const PetscInt cEq,
             {
                 psol[cEq].lpBC_l_1[faIn][dd] = i;
                 psol[cEq].lpBC_g_1[faIn][dd] = plhs.ltg[i];
+                tmpVal1[faIn][dd] = psol[cEq].svFSI_lpBC_1[faIn][i];
                 dd++;
             }
         }
     }
+
+    /* 
+        Handling task-shared faces in a general way by creating a global vector 
+        to loop against when the node-to-node multiplication is computed 
+    */
+    // The procedure is generalized so it can handle both cases:
+    // either the face is shared by more than one task or not.
+    // The method consists in looping over the number of points owned
+    // by each task and then using the global vector to loop against. 
+    // When the face is not shared with other tasks, the global vector is
+    // the same as the local vector. All of this is possible because
+    // PETSc automatically set the array to nullptr if the size is 0 
+    // and MPI functions handle this case by not allocating any memory.
+    // No need to differentiate between the two cases and each task will 
+    // have its own local vector and global vector for each face where 
+    // the resistance boundary condition is applied.
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_l_0_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_g_0_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_Val_0_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_l_1_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_g_1_all);
+    PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpBC_Val_1_all);
+    PetscInt **lpPts_0_per_task; // this contains the number of points on each task for each face
+    PetscInt **lpPts_1_per_task; 
+    PetscMalloc1(psol[cEq].nResFaces, &lpPts_0_per_task);
+    PetscMalloc1(psol[cEq].nResFaces, &lpPts_1_per_task);
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscCall(PetscMalloc1(nTask, &lpPts_0_per_task[faIn]));
+        PetscCall(PetscMalloc1(nTask, &lpPts_1_per_task[faIn]));
+        // For each face, we need to know how many points are on each task
+        PetscCallMPI(MPI_Allgather(&psol[cEq].lpPts_0[faIn], 1, MPIU_INT, lpPts_0_per_task[faIn], 1, MPIU_INT, MPI_COMM_WORLD));
+        PetscCallMPI(MPI_Allgather(&psol[cEq].lpPts_1[faIn], 1, MPIU_INT, lpPts_1_per_task[faIn], 1, MPIU_INT, MPI_COMM_WORLD));
+    }
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts_0_all));
+    PetscCall(PetscMalloc1(psol[cEq].nResFaces, &psol[cEq].lpPts_1_all));
+    // this is the total number of points on each face (considering all tasks contribution)
+    PetscCallMPI(MPI_Allreduce(psol[cEq].lpPts_0, psol[cEq].lpPts_0_all, psol[cEq].nResFaces, MPIU_INT, MPI_SUM, MPI_COMM_WORLD));
+    PetscCallMPI(MPI_Allreduce(psol[cEq].lpPts_1, psol[cEq].lpPts_1_all, psol[cEq].nResFaces, MPIU_INT, MPI_SUM, MPI_COMM_WORLD));
+
+    // recvcounts and displs are used to prepare the data for mpi_allgatherv 
+    // they provide the number of points on each task and the displacement/offset
+    // for each task.
+    PetscInt *recvcounts;
+    PetscInt *displs;
+    PetscInt total_n;
+    PetscMalloc1(nTask, &recvcounts);
+    PetscMalloc1(nTask, &displs);
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        total_n = 0;
+        PetscCall(PetscArrayzero(recvcounts, nTask));
+        PetscCall(PetscArrayzero(displs, nTask));
+        for (PetscInt i = 0; i < nTask; ++i) {
+            recvcounts[i] = lpPts_0_per_task[faIn][i];
+            displs[i] = total_n;
+            total_n += lpPts_0_per_task[faIn][i];
+        }
+
+        // if (nShared[faIn] > 1)
+        // {
+
+        // total_n should be the same as psol[cEq].lpPts_all[faIn]
+        // this check should be done for debugging purpose only
+        // remove it in the future
+        if (total_n != psol[cEq].lpPts_0_all[faIn])
+        {
+            PetscPrintf(MPI_COMM_WORLD, "ERROR <PETSC_CREATE_BC>: "
+                                        "total_n != psol[cEq].lpPts_all[faIn]\n");
+            return PETSC_ERR_ARG_WRONGSTATE;
+        }
+         
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_0_all[faIn], &psol[cEq].lpBC_l_0_all[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_0_all[faIn], &psol[cEq].lpBC_g_0_all[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_0_all[faIn], &psol[cEq].lpBC_Val_0_all[faIn]));
+
+        // Step 3: Allgather the data:
+        // 1. gather local nodes numbering from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(psol[cEq].lpBC_l_0[faIn], psol[cEq].lpPts_0[faIn], MPIU_INT,
+            psol[cEq].lpBC_l_0_all[faIn], recvcounts, displs, MPIU_INT, MPI_COMM_WORLD)); 
+        // 2. gather global nodes numbering from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(psol[cEq].lpBC_g_0[faIn], psol[cEq].lpPts_0[faIn], MPIU_INT,
+            psol[cEq].lpBC_g_0_all[faIn], recvcounts, displs, MPIU_INT, MPI_COMM_WORLD));
+        // 3. gather values from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(tmpVal0[faIn], psol[cEq].lpPts_0[faIn], MPIU_REAL,
+            psol[cEq].lpBC_Val_0_all[faIn], recvcounts, displs, MPIU_REAL, MPI_COMM_WORLD));
+
+        total_n = 0;
+        PetscCall(PetscArrayzero(recvcounts, nTask));
+        PetscCall(PetscArrayzero(displs, nTask));
+        for (PetscInt i = 0; i < nTask; ++i) {
+            recvcounts[i] = lpPts_1_per_task[faIn][i];
+            displs[i] = total_n;
+            total_n += lpPts_1_per_task[faIn][i];
+        }
+
+        if (total_n != psol[cEq].lpPts_1_all[faIn])
+        {
+            PetscPrintf(MPI_COMM_WORLD, "ERROR <PETSC_CREATE_BC>: "
+                                        "total_n != psol[cEq].lpPts_all[faIn]\n");
+        }
+             
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_1_all[faIn], &psol[cEq].lpBC_l_1_all[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_1_all[faIn], &psol[cEq].lpBC_g_1_all[faIn]));
+        PetscCall(PetscMalloc1(psol[cEq].lpPts_1_all[faIn], &psol[cEq].lpBC_Val_1_all[faIn]));
+    
+            // Step 3: Allgather the data:
+            // 1. gather local nodes numbering from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(psol[cEq].lpBC_l_1[faIn], psol[cEq].lpPts_1[faIn], MPIU_INT,
+            psol[cEq].lpBC_l_1_all[faIn], recvcounts, displs, MPIU_INT, MPI_COMM_WORLD)); 
+            // 2. gather global nodes numbering from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(psol[cEq].lpBC_g_1[faIn], psol[cEq].lpPts_1[faIn], MPIU_INT,
+            psol[cEq].lpBC_g_1_all[faIn], recvcounts, displs, MPIU_INT, MPI_COMM_WORLD));
+            // 3. gather values from each task for each face with resistance BC
+        PetscCallMPI(MPI_Allgatherv(tmpVal1[faIn], psol[cEq].lpPts_1[faIn], MPIU_REAL,
+            psol[cEq].lpBC_Val_1_all[faIn], recvcounts, displs, MPIU_REAL, MPI_COMM_WORLD));
+    }
+
+    // free all temporary memory allocated. I think I just need to keep the global
+    // arrays (lpBC_l_all, lpBC_g_all, lpBC_Val_all, lpPts_all) for the rest of the code.
+    // need to free lpPts_per_task, tmpVal, recvcounts, displs
+    for (int faIn = 0; faIn < psol[cEq].nResFaces; ++faIn)
+    {
+        PetscCall(PetscFree(lpPts_0_per_task[faIn]));
+        PetscCall(PetscFree(lpPts_1_per_task[faIn]));
+        PetscCall(PetscFree(tmpVal0[faIn]));
+        PetscCall(PetscFree(tmpVal1[faIn]));
+    }
+    PetscCall(PetscFree(lpPts_0_per_task));
+    PetscCall(PetscFree(lpPts_1_per_task));
+    PetscCall(PetscFree(tmpVal0));
+    PetscCall(PetscFree(tmpVal1));
+    PetscCall(PetscFree(recvcounts));
+    PetscCall(PetscFree(displs));
 
     PetscCall(PetscFree(row1_0));
     PetscCall(PetscFree(row1_1));
@@ -1020,9 +1332,9 @@ PetscErrorCode petsc_create_vecmat(const PetscInt dof, const PetscInt cEq, const
         for (i = 0; i < psol[cEq].lpPts[faIn]; i++)
         {
             row = psol[cEq].lpBC_g[faIn][i];
-            for (j = 0; j < psol[cEq].lpPts[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_all[faIn]; j++)
             {
-                col = psol[cEq].lpBC_g[faIn][j];
+                col = psol[cEq].lpBC_g_all[faIn][j];
                 PetscCall(MatSetValue(preallocator, row, col, 0.0, INSERT_VALUES));
             }
         }
@@ -1148,28 +1460,28 @@ PetscErrorCode petsc_create_splitvecmat(const PetscInt dof, const PetscInt cEq, 
         for (i = 0; i < psol[cEq].lpPts_0[faIn]; i++)
         {
             row = psol[cEq].lpBC_g_0[faIn][i];
-            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_0_all[faIn]; j++)
             {
-                col = psol[cEq].lpBC_g_0[faIn][j];
+                col = psol[cEq].lpBC_g_0_all[faIn][j];
                 PetscCall(MatSetValue(preallocator_00, row, col, 0.0, INSERT_VALUES));
             }
-            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_1_all[faIn]; j++)
             {
-                col = psol[cEq].lpBC_g_1[faIn][j];
+                col = psol[cEq].lpBC_g_1_all[faIn][j];
                 PetscCall(MatSetValue(preallocator_01, row, col, 0.0, INSERT_VALUES));
             }
         }
         for (i = 0; i < psol[cEq].lpPts_1[faIn]; i++)
         {
             row = psol[cEq].lpBC_g_1[faIn][i];
-            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_0_all[faIn]; j++)
             {
-                col = psol[cEq].lpBC_g_0[faIn][j];
+                col = psol[cEq].lpBC_g_0_all[faIn][j];
                 PetscCall(MatSetValue(preallocator_10, row, col, 0.0, INSERT_VALUES));
             }
-            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_1_all[faIn]; j++)
             {
-                col = psol[cEq].lpBC_g_1[faIn][j];
+                col = psol[cEq].lpBC_g_1_all[faIn][j];
                 PetscCall(MatSetValue(preallocator_11, row, col, 0.0, INSERT_VALUES));
             }
         }
@@ -1395,11 +1707,11 @@ PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, PetscRea
         {
             ii = psol[cEq].lpBC_l[faIn][i];
             row = psol[cEq].lpBC_g[faIn][i];
-            for (j = 0; j < psol[cEq].lpPts[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_all[faIn]; j++)
             {
-                jj = psol[cEq].lpBC_l[faIn][j];
-                col = psol[cEq].lpBC_g[faIn][j];
-                value = lpBC[faIn][ii] * lpBC[faIn][jj];
+                // jj = psol[cEq].lpBC_l[faIn][j];
+                col = psol[cEq].lpBC_g_all[faIn][j];
+                value = lpBC[faIn][ii] * psol[cEq].lpBC_Val_all[faIn][j];
                 PetscCall(MatSetValue(psol[cEq].A, row, col, value, ADD_VALUES));
             }
         }
@@ -1415,6 +1727,11 @@ PetscErrorCode petsc_set_bc(const PetscInt cEq, const PetscReal *DirBC, PetscRea
     PetscCall(VecPlaceArray(x, DirBC));
     PetscCall(MatZeroRowsColumns(psol[cEq].A, psol[cEq].DirPts, psol[cEq].DirBC, 1.0, x, psol[cEq].b));
 
+    PetscViewer viewer;
+    PetscCall(PetscViewerBinaryOpen(MPI_COMM_WORLD, "matrix.dat", FILE_MODE_WRITE, &viewer));
+    PetscCall(MatView(psol[cEq].A, viewer));
+    PetscCall(PetscViewerDestroy(&viewer));
+    
     PetscCall(VecDestroy(&x));
     PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -1440,18 +1757,18 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq)
         {
             ii = psol[cEq].lpBC_l_0[faIn][i];
             row = psol[cEq].lpBC_g_0[faIn][i];
-            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_0_all[faIn]; j++)
             {
-                jj = psol[cEq].lpBC_l_0[faIn][j];
-                col = psol[cEq].lpBC_g_0[faIn][j];
-                value = psol[cEq].svFSI_lpBC_0[faIn][ii] * psol[cEq].svFSI_lpBC_0[faIn][jj];
+                // jj = psol[cEq].lpBC_l_0[faIn][j];
+                col = psol[cEq].lpBC_g_0_all[faIn][j];
+                value = psol[cEq].svFSI_lpBC_0[faIn][ii] * psol[cEq].lpBC_Val_0_all[faIn][j]; //* psol[cEq].svFSI_lpBC_0[faIn][jj];
                 PetscCall(MatSetValue(psol[cEq].A_mn[0], row, col, value, ADD_VALUES));
             }
-            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_1_all[faIn]; j++)
             {
-                jj = psol[cEq].lpBC_l_1[faIn][j];
-                col = psol[cEq].lpBC_g_1[faIn][j];
-                value = psol[cEq].svFSI_lpBC_0[faIn][ii] * psol[cEq].svFSI_lpBC_1[faIn][jj];
+                // jj = psol[cEq].lpBC_l_1[faIn][j];
+                col = psol[cEq].lpBC_g_1_all[faIn][j];
+                value = psol[cEq].svFSI_lpBC_0[faIn][ii] * psol[cEq].lpBC_Val_1_all[faIn][j]; //* psol[cEq].svFSI_lpBC_1[faIn][jj];
                 PetscCall(MatSetValue(psol[cEq].A_mn[1], row, col, value, ADD_VALUES));
             }
         }
@@ -1459,18 +1776,18 @@ PetscErrorCode petsc_set_splitbc(const PetscInt cEq)
         {
             ii = psol[cEq].lpBC_l_1[faIn][i];
             row = psol[cEq].lpBC_g_1[faIn][i];
-            for (j = 0; j < psol[cEq].lpPts_0[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_0_all[faIn]; j++)
             {
-                jj = psol[cEq].lpBC_l_0[faIn][j];
-                col = psol[cEq].lpBC_g_0[faIn][j];
-                value = psol[cEq].svFSI_lpBC_1[faIn][ii] * psol[cEq].svFSI_lpBC_0[faIn][jj];
+                // jj = psol[cEq].lpBC_l_0[faIn][j];
+                col = psol[cEq].lpBC_g_0_all[faIn][j];
+                value = psol[cEq].svFSI_lpBC_1[faIn][ii] * psol[cEq].lpBC_Val_0_all[faIn][j]; //* psol[cEq].svFSI_lpBC_0[faIn][jj];
                 PetscCall(MatSetValue(psol[cEq].A_mn[2], row, col, value, ADD_VALUES));
             }
-            for (j = 0; j < psol[cEq].lpPts_1[faIn]; j++)
+            for (j = 0; j < psol[cEq].lpPts_1_all[faIn]; j++)
             {
-                jj = psol[cEq].lpBC_l_1[faIn][j];
-                col = psol[cEq].lpBC_g_1[faIn][j];
-                value = psol[cEq].svFSI_lpBC_1[faIn][ii] * psol[cEq].svFSI_lpBC_1[faIn][jj];
+                // jj = psol[cEq].lpBC_l_1[faIn][j];
+                col = psol[cEq].lpBC_g_1_all[faIn][j];
+                value = psol[cEq].svFSI_lpBC_1[faIn][ii] * psol[cEq].lpBC_Val_1_all[faIn][j]; //* psol[cEq].svFSI_lpBC_1[faIn][jj];
                 PetscCall(MatSetValue(psol[cEq].A_mn[3], row, col, value, ADD_VALUES));
             }
         }
@@ -1802,7 +2119,7 @@ void PetscLinearAlgebra::PetscImpl::init_dir_and_coupneu_bc(ComMod &com_mod,
     // V_ = 0.0;
     bool isCoupledBC = false;
     PetscInt cc = 0;
-
+    
     for (int faIn = 0; faIn < lhs.nFaces; faIn++)
     {
         auto &face = lhs.face[faIn];
@@ -1822,9 +2139,10 @@ void PetscLinearAlgebra::PetscImpl::init_dir_and_coupneu_bc(ComMod &com_mod,
         if (face.coupledFlag)
         {
             PetscMalloc1(mynNo * dof, &lpVec[cc]);
+            PetscArrayzero(lpVec[cc], mynNo * dof);
+
             isCoupledBC = true;
             int faDof = std::min(face.dof, dof);
-
             for (int a = 0; a < face.nNo; a++)
             {
                 int Ac = face.glob(a);
@@ -1895,7 +2213,7 @@ void PetscLinearAlgebra::PetscImpl::solve(ComMod &com_mod, eqType &lEq, const Ve
 
     // only excute once for each equation
     //
-    petsc_create_linearsystem(com_mod.dof, com_mod.cEq, com_mod.nEq, W_.data(), lpVec, nFacesRes);
+    petsc_create_linearsystem(com_mod.dof, com_mod.cEq, com_mod.nEq, com_mod.lhs.commu.nTasks, W_.data(), lpVec, nFacesRes);
 
     petsc_set_values(com_mod.dof, com_mod.cEq, com_mod.R.data(), com_mod.Val.data(), W_.data(), lpVec);
 
