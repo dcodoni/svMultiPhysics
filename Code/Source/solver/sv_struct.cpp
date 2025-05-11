@@ -224,7 +224,7 @@ void construct_dsolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
   const int dof = com_mod.dof;
   const int cEq = com_mod.cEq;
   const auto& eq = com_mod.eq[cEq];
-  auto cDmn = com_mod.cDmn;
+  auto& cDmn = com_mod.cDmn;
   const int nsymd = com_mod.nsymd;
   auto& pS0 = com_mod.pS0;
   auto& pSn = com_mod.pSn;

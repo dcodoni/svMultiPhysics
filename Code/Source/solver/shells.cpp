@@ -67,7 +67,7 @@ void construct_shell(ComMod& com_mod, const mshType& lM, const Array<double>& Ag
   const int dof = com_mod.dof;
   const int cEq = com_mod.cEq;
   const auto& eq = com_mod.eq[cEq];
-  auto cDmn = com_mod.cDmn;
+  auto& cDmn = com_mod.cDmn;
 
   int eNoN = lM.eNoN;
 
