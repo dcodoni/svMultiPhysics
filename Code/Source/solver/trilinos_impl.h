@@ -46,6 +46,10 @@
 #include <time.h>
 #include <numeric>
 
+// Theuchos includes
+#include "Teuchos_RCP.hpp"
+#include "Teuchos_DefaultComm.hpp"
+
 // Epetra includes
 #include "Epetra_MpiComm.h" //include MPI communication
 #include "Epetra_Map.h" //need to create block map
@@ -71,6 +75,33 @@
 #include "Ifpack_IC.h"
 #include "Ifpack_ICT.h"
 
+
+/**************************************************************/
+/*                      Types Definitions                     */
+/**************************************************************/
+/* Scalar types aliases */
+using Scalar_d = double;
+using Scalar_i = int;
+using Scalar_c = std::complex<double>;
+
+/* Ordinals and node aliases */
+using LO = int;
+using GO = int;
+using Node = Kokkos::Compat::KokkosSerialWrapperNode;  // for CPU run
+
+/* Tpetra type aliases */
+using Tpetra_Map            = Tpetra::Map<LO, GO, Node>;
+using Tpetra_CrsMatrix      = Tpetra::CrsMatrix<Scalar_d, LO, GO, Node>;
+using Tpetra_BlockCrsMatrix = Tpetra::BlockCrsMatrix<Scalar_d, LO, GO, Node>;
+using Tpetra_MultiVector    = Tpetra::MultiVector<Scalar_d, LO, GO, Node>; 
+using Tpetra_Vector         = Tpetra::Vector<Scalar_d, LO, GO, Node>;
+using Tpetra_Import         = Tpetra::Import<LO, GO, Node>;
+using Tpetra_CrsGraph       = Tpetra::CrsGraph<LO, GO, Node>;
+using Tpetra_Operator       = Tpetra::Operator<Scalar_d, LO, GO, Node>;
+
+/* Belos aliases */
+using Belos_LinearProblem = Belos::LinearProblem<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
+
 /**************************************************************/
 /*                      Macro Definitions                     */
 /**************************************************************/
@@ -93,15 +124,26 @@
 /// @brief Initialize all Epetra types we need separate from Fortran
 struct Trilinos
 {
-  static Epetra_BlockMap *blockMap;
-  static Epetra_FEVector *F;
-  static Epetra_FEVbrMatrix *K;
-  static Epetra_Vector *X;
-  static Epetra_Vector *ghostX;
-  static Epetra_Import *Importer;
-  static std::vector<Epetra_FEVector*> bdryVec_list;
-  static Epetra_MpiComm *comm;
-  static Epetra_FECrsGraph *K_graph;
+  // static Epetra_BlockMap *blockMap;
+  // static Epetra_FEVector *F;
+  // static Epetra_FEVbrMatrix *K;
+  // static Epetra_Vector *X;
+  // static Epetra_Vector *ghostX;
+  // static Epetra_Import *Importer;
+  // static std::vector<Epetra_FEVector*> bdryVec_list;
+  // static Epetra_MpiComm *comm;
+  // static Epetra_FECrsGraph *K_graph;
+
+  static Teuchos::RCP<const Tpetra_Map> Map; 
+  static Teuchos::RCP<Tpetra_MultiVector> F;
+  static Teuchos::RCP<Tpetra_MultiVector> ghostF;
+  static Teuchos::RCP<Tpetra_CrsMatrix> K;
+  static Teuchos::RCP<Tpetra_Vector> X;
+  static Teuchos::RCP<Tpetra_Vector> ghostX;
+  static Teuchos::RCP<Tpetra_Import> Importer;
+  static std::vector<Teuchos::RCP<Tpetra_MultiVector>> bdryVec_list;
+  static Teuchos::RCP<const Teuchos::Comm<int>> comm;
+  static Teuchos::RCP<Tpetra_CrsGraph> K_graph;
 };
 
 /**
@@ -110,7 +152,7 @@ struct Trilinos
  *        AztecOO iterative solve which only uses the Apply() method to compute
  *        the matrix vector product
  */
-class TrilinosMatVec: public virtual Epetra_Operator
+class TrilinosMatVec: public Tpetra_Operator
 {
 public:
 
@@ -120,62 +162,105 @@ public:
    *  \param x vector to be applied on the operator
    *  \param y result of sprase matrix vector multiplication
    */
-  int Apply(const Epetra_MultiVector &x, Epetra_MultiVector &y) const;
+  // int Apply(const Epetra_MultiVector &x, Epetra_MultiVector &y) const;
+
+  /* Y = beta * Y + alpha * A^mode * X */
+  void apply(const Tpetra_MultiVector& X, Tpetra_MultiVector& Y,
+           Teuchos::ETransp mode = Teuchos::NO_TRANS,
+           Scalar_d alpha = Teuchos::ScalarTraits< Scalar_d >::one(), 
+           Scalar_d beta  = Teuchos::ScalarTraits<Scalar_d>::zero()) const override;
+
+  /*  
+    Returns the map describing the layout of the domain vector space.
+    This map defines the distribution of the input vectors to the operator.
+  */
+  Teuchos::RCP<const Tpetra_Map> getDomainMap() const override
+  {
+    return Trilinos::K->getDomainMap();
+  }
+
+  /* 
+    Returns the map describing the layout of the range vector space.
+    This map defines the distribution of the output vectors from the operator.
+  */
+  Teuchos::RCP<const Tpetra_Map> getRangeMap() const override
+  {
+    return Trilinos::K->getRangeMap();
+  }
 
   /** Tells whether to use the transpose of the matrix in each matrix
    * vector product */
-  int SetUseTranspose(bool use_transpose)
-  {
-    return Trilinos::K->SetUseTranspose(use_transpose);
-  }
+  // int SetUseTranspose(bool use_transpose)
+  // {
+  //   return Trilinos::K->SetUseTranspose(use_transpose);
+  // }
 
-  /// Computes A_inv*x
-  int ApplyInverse(const Epetra_MultiVector &X, Epetra_MultiVector &Y) const
-  {
-    return Trilinos::K->ApplyInverse(X,Y);
-  }
+  // /// Computes A_inv*x
+  // int ApplyInverse(const Epetra_MultiVector &X, Epetra_MultiVector &Y) const
+  // {
+  //   return Trilinos::K->ApplyInverse(X,Y);
+  // }
+
+  /* This handles transpose if it is needed */
+  // if (mode == Teuchos::TRANS) {
+  //   // Apply the transpose of the operator
+  //   for (auto& bdryVec : Trilinos::bdryVec_list) {
+  //     bdryVec->Multiply(alpha, X, beta, Y);
+  //   }
+  // } else {
+  //   // Apply the operator without transpose
+  //   Trilinos::K->apply();
 
   /// Infinity norm for global stiffness does not add in the boundary term
-  double NormInf() const
-  {
-    return Trilinos::K->NormInf();
-  }
+  /* Remove norm, if needed manually compute it */
+  // double NormInf() const
+  // {
+  //   return Trilinos::K->NormInf();
+  // }
 
   /// Returns a character string describing the operator
-  const char * Label() const
-  {
-    return Trilinos::K->Label();
-  }
+  /*  Tpetra does not support label: alternative create a string memmber
+      defined in the constructor
+  */
+  // const char * Label() const
+  // {
+  //   return Trilinos::K->Label();
+  // }
 
-  /// Returns current UseTranspose setting
-  bool UseTranspose() const
-  {
-    return Trilinos::K->UseTranspose();
-  }
+  // /// Returns current UseTranspose setting
+  /* Tpetra handles the transpose through the Apply method */
+  // bool UseTranspose() const
+  // {
+  //   return Trilinos::K->UseTranspose();
+  // }
 
-  /// Returns true if this object can provide an approx Inf-norm false otherwise
-  bool HasNormInf() const
-  {
-    return Trilinos::K->HasNormInf();
-  }
+  // /// Returns true if this object can provide an approx Inf-norm false otherwise
+  /* Tpetra does not support inf norm of matrix: compute manually if needed */
+  // bool HasNormInf() const
+  // {
+  //   return Trilinos::K->HasNormInf();
+  // }
 
   /// Returns pointer to Epetra_Comm communicator associated with this operator
-  const Epetra_Comm &Comm() const
-  {
-    return Trilinos::K->Comm();
-  }
+  /* In Tpetra teh communicator is handled by Tpetra::Map no need to provide 
+     a method here 
+  */
+  // const Epetra_Comm &Comm() const
+  // {
+  //   return Trilinos::K->Comm();
+  // }
 
   /// Returns Epetra_Map object assoicated with domain of this operator
-  const Epetra_Map &OperatorDomainMap() const
-  {
-    return Trilinos::K->OperatorDomainMap();
-  }
+  // const Epetra_Map &OperatorDomainMap() const
+  // {
+  //   return Trilinos::K->OperatorDomainMap();
+  // }
 
   /// Returns the Epetra_Map object associated with teh range of this operator
-  const Epetra_Map &OperatorRangeMap() const
-  {
-    return Trilinos::K->OperatorRangeMap();
-  }
+  // const Epetra_Map &OperatorRangeMap() const
+  // {
+  //   return Trilinos::K->OperatorRangeMap();
+  // }
 
 };// class TrilinosMatVec
 
@@ -233,7 +318,7 @@ void setIFPACKPrec(AztecOO &Solver);
 void checkDiagonalIsZero();
 
 void constructJacobiScaling(const double *dirW,
-              Epetra_Vector &diagonal);
+              Tpetra_Vector &diagonal);
 
 // --- Debugging functions ----------------------------------------------------
 void printMatrixToFile();

@@ -46,27 +46,36 @@
 // --- Define global Trilinos variables to be used in below functions ---------
 
 /// Unique block map consisting of nodes owned by each processor
-Epetra_BlockMap *Trilinos::blockMap;
+Teuchos::RCP<const Tpetra_Map> Trilinos::Map;
+// Epetra_BlockMap *Trilinos::blockMap;
 
 /// Global block force vector
-Epetra_FEVector *Trilinos::F;
+Teuchos::RCP<Tpetra_MultiVector> Trilinos::F;
+Teuchos::RCP<Tpetra_MultiVector> Trilinos::ghostF;
+// Epetra_FEVector *Trilinos::F;
 
 /// Global block stiffness matrix
-Epetra_FEVbrMatrix *Trilinos::K;
+Teuchos::RCP<Tpetra_CrsMatrix> Trilinos::K;
+// Epetra_FEVbrMatrix *Trilinos::K;
 
 /// Solution vector consisting of unique nodes owned by the processor
-Epetra_Vector *Trilinos::X;
+Teuchos::RCP<Tpetra_Vector> Trilinos::X;
+// Epetra_Vector *Trilinos::X;
 
 /// Solution vector with nodes owned by processor followed by its ghost nodes
-Epetra_Vector *Trilinos::ghostX;
+Teuchos::RCP<Tpetra_Vector> Trilinos::ghostX;
+// Epetra_Vector *Trilinos::ghostX;
 
 /// Import ghostMap into blockMap to create ghost map
-Epetra_Import *Trilinos::Importer;
+Teuchos::RCP<Tpetra_Import> Trilinos::Importer;
+// Epetra_Import *Trilinos::Importer;
 
 /// Contribution from coupled neumann boundary conditions. One vector for each coupled Neumann boundary
-std::vector<Epetra_FEVector*> Trilinos::bdryVec_list;
+std::vector<Teuchos::RCP<Tpetra_MultiVector>> Trilinos::bdryVec_list;
+// std::vector<Epetra_FEVector*> Trilinos::bdryVec_list;
 
-Epetra_FECrsGraph *Trilinos::K_graph;
+Teuchos::RCP<Tpetra_CrsGraph> Trilinos::K_graph;
+// Epetra_FECrsGraph *Trilinos::K_graph;
 
 ML_Epetra::MultiLevelPreconditioner* MLPrec = NULL;
 
@@ -112,31 +121,35 @@ bool coupledBC;
  * \param x vector to be applied on the operator
  * \param y result of sprase matrix vector multiplication
  */
-int TrilinosMatVec::Apply(const Epetra_MultiVector &x,
-        Epetra_MultiVector &y) const
+// int TrilinosMatVec::Apply(const Epetra_MultiVector &x,
+//         Epetra_MultiVector &y) const
+void apply(const Tpetra_MultiVector& x, Tpetra_MultiVector& y,
+           Teuchos::ETransp mode, Scalar_d alpha, Scalar_d beta) const
 {
-  // Store initial matrix vector product result in y (y = K*x)
-  Trilinos::K->Apply(x, y); //K*x
+  // Store initial matrix vector product result in y (y = K*x if alpha = 1.0, beta = 0.0) 
+  Trilinos::K->apply(x, y, mode, alpha, beta); //Y = beta*Y + alpha*K*X 
 
   // Now add on the coupled Neumann boundary contribution y += v1*(v1'*x) + v2*(v2'*x) + ...
   if (coupledBC)
   {
     // Declare dot product v_i'*x
-    double dot = 0.0;
-
+    Scalar_d dot = 0.0;
     // Loop over all coupled Neumann boundary vectors
     for (auto bdryVec : Trilinos::bdryVec_list)
     {
-      // Compute dot product dot = v_i'*x
-      bdryVec->Dot(x, &dot);
+      // Compute dot = bdryVec^T * x
+      x.dot(*bdryVec, &dot);
+      // y = 1.0 * y + dot * bdryVec
+      y.update(dot, *bdryVec, 1.0);
+      // // Compute dot product dot = v_i'*x
+      // bdryVec->Dot(x, &dot);
 
-      // y = 1*y + dot*v_i
-      y.Update(dot,
-              *bdryVec,
-              1.0);
+      // // y = 1*y + dot*v_i
+      // y.Update(dot,
+      //         *bdryVec,
+      //         1.0);
     }
   }
-  return 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -183,7 +196,8 @@ void trilinos_lhs_create(const int numGlobalNodes, const int numLocalNodes,
   dof = Dof; //constant size dof blocks
   ghostAndLocalNodes = numGhostAndLocalNodes;
   localNodes = numLocalNodes;
-  Epetra_MpiComm comm(MPI_COMM_WORLD);
+  Teuchos::RCP<const Teuchos::Comm<int>> comm = Tpetra::getDefaultComm();
+  // Epetra_MpiComm comm(MPI_COMM_WORLD);
 
   #ifdef debug_trilinos_lhs_create
   std::cout <<  msg_prefix << "indexBase: " << indexBase << std::endl;
@@ -221,22 +235,59 @@ void trilinos_lhs_create(const int numGlobalNodes, const int numLocalNodes,
       localToGlobalSorted.emplace_back(ltgSorted[i]);
     }
   }
-
+  /*
+    Creating a Map for the local nodes owned by the processor
+  */
   // Create blockmap for arbitrary distributon of constant size, dof, element
   // amongst the procs. This is a non-overlapping map defining a unique partition
   // localToGlobalSorted[0] contains global index value of ith owned element on
   // the calling processor
   //
-  Trilinos::blockMap = new Epetra_BlockMap(numGlobalNodes, numLocalNodes,
-                       &localToGlobalSorted[0], dof, indexBase, comm);
+  std::vector<GO> globalDofGIDs;
+  globalDofGIDs.reserve(numLocalNodes * dof);
 
+  // Expand each node global ID into `dof` global DoF IDs
+  for (GO node_gid : localToGlobalSorted) {
+    for (int d = 0; d < dof; ++d) {
+      globalDofGIDs.push_back(node_gid * dof + d);
+    }
+  }
+  // Create the Tpetra Map (DoF-wise map)
+  Teuchos::RCP<const Tpetra_Map> Trilinos::Map = Teuchos::rcp(new Tpetra_Map(
+      Teuchos::OrdinalTraits<GO>::invalid(),  // compute global num DoFs from input
+      globalDofGIDs.data(), globalDofGIDs.size(), indexBase, comm));
+
+  // Trilinos::blockMap = new Epetra_BlockMap(numGlobalNodes, numLocalNodes,
+  //                      &localToGlobalSorted[0], dof, indexBase, comm);
+
+  /*
+    Creating a Map for the local nodes owned and shared by the processor
+  */
   // Create blockmap which includes the ghost nodes to be imported into the
   // solution vector at the end
   //
   int inc_ghost = -1; // since including ghost nodes sum will not equal total
-  Epetra_BlockMap ghostMap(inc_ghost, numGhostAndLocalNodes, ltgSorted.data(), dof,
-          indexBase, comm);
+  std::vector<GO> globalGhostDofGIDs;
+  globalGhostDofGIDs.reserve(numGhostAndLocalNodes * dof);
+  // Expand node GIDs to DoF-level GIDs
+  for (GO node_gid : ltgSorted) {
+    for (int d = 0; d < dof; ++d) {
+      globalGhostDofGIDs.push_back(node_gid * dof + d);
+    }
+  }
+  // Create the ghost map — include owned + ghost GIDs
+  Teuchos::RCP<const Tpetra_Map> ghostMap = Teuchos::rcp(new Tpetra_Map(
+      Teuchos::OrdinalTraits<GO>::invalid(),  // unknown global length
+      globalGhostDofGIDs.data(),
+      globalGhostDofGIDs.size(),
+      indexBase,
+      comm));
+  // Epetra_BlockMap ghostMap(inc_ghost, numGhostAndLocalNodes, ltgSorted.data(), dof,
+  //         indexBase, comm);
 
+  /*
+    Graph construction  
+  */
   // Calculate nnzPerRow to pass into graph constructor
   //
   if (new_mapping_pattern) {
@@ -246,9 +297,20 @@ void trilinos_lhs_create(const int numGlobalNodes, const int numLocalNodes,
     }
   } 
 
+  const size_t numLocalRows = numLocalNodes * dof;
+  std::vector<size_t> nnzPerDofRow;
+  nnzPerDofRow.reserve(numLocalRows);
+
+  for (size_t i = 0; i < numLocalNodes; ++i) {
+    size_t nnz_per_node_row = rowPtr[i+1] - rowPtr[i]; // same as before
+    for (int d = 0; d < dof; ++d) {
+      nnzPerDofRow.push_back(nnz_per_node_row * dof);
+    }
+  }
   // Construct graph based on nnz per row
   //
-  Trilinos::K_graph = new Epetra_FECrsGraph(Copy, *Trilinos::blockMap, &nnzPerRow[0]);
+  Trilinos::K_graph = Teuchos::rcp(new Tpetra_CrsGraph(Trilinos::Map, nnzPerDofRow));
+  // Trilinos::K_graph = new Epetra_FECrsGraph(Copy, *Trilinos::blockMap, &nnzPerRow[0]);
 
   unsigned nnzCount = 0; //cumulate count of block nnz per rows
 
@@ -265,31 +327,59 @@ void trilinos_lhs_create(const int numGlobalNodes, const int numLocalNodes,
   //loop over block rows owned by current proc using localToGlobal index pointer
   for (unsigned i = 0; i < numGhostAndLocalNodes; ++i)
   {
-    if (new_mapping_pattern && i >= numLocalNodes)
-      nnzPerRow.emplace_back(rowPtr[i+1] - rowPtr[i]);
-    int numEntries = nnzPerRow[i]; //nnz per row
-    int error = 0;
-    int num_rows_inserting = 1; //number of rows-inserting one row at a time
-    error = Trilinos::K_graph->InsertGlobalIndices(num_rows_inserting,
-            &ltgUnsorted[i], numEntries, &globalColInd[nnzCount]);
-
-    //colInd is indexed by nnz per rows processed so far
-    if (error != 0)
+    GO nodeGID = ltgUnsorted[i]; // node-based global index
+    for (int d = 0; d < dof; ++d)
     {
-      std::cout << "ERROR: Inserting Global Indices into Map" << std::endl;
-      exit(1);
-    }
+      GO rowGID = nodeGID * dof + d;
+      if (new_mapping_pattern && i >= numLocalNodes)
+        nnzPerRow.emplace_back(rowPtr[i+1] - rowPtr[i]);
 
-    // final result should be nnz and so will not go out of bounds on colInd
-    // up to nnz -1
-    nnzCount += numEntries;
-    //store into global vector
+      int numEntries = nnzPerRow[i];
+      std::vector<GO> rowCols(numEntries*dof);
+
+      for (int j = 0; j < numEntries; ++j)
+      {
+        GO colNode = globalColInd[nnzCount + j];
+        for (int col_d = 0; col_d < dof; ++col_d)
+        {
+          rowCols[j * dof + col_d] = colNode * dof + col_d;
+        }
+      }
+
+      // Flatten the entries to dof-aware indices
+      Trilinos::K_graph->insertGlobalIndices(rowGID, rowCols);
+    }
+    nnzCount += nnzPerRow[i]*dof;
     if (new_mapping_pattern)
-      localToGlobalUnsorted.emplace_back(ltgUnsorted[i]);
-  } // for
+        localToGlobalUnsorted.emplace_back(ltgUnsorted[i]);
+  }
+  // for (unsigned i = 0; i < numGhostAndLocalNodes; ++i)
+  // {
+  //   if (new_mapping_pattern && i >= numLocalNodes)
+  //     nnzPerRow.emplace_back(rowPtr[i+1] - rowPtr[i]);
+  //   int numEntries = nnzPerRow[i]; //nnz per row
+  //   int error = 0;
+  //   int num_rows_inserting = 1; //number of rows-inserting one row at a time
+  //   error = Trilinos::K_graph->InsertGlobalIndices(num_rows_inserting,
+  //           &ltgUnsorted[i], numEntries, &globalColInd[nnzCount]);
+
+  //   //colInd is indexed by nnz per rows processed so far
+  //   if (error != 0)
+  //   {
+  //     std::cout << "ERROR: Inserting Global Indices into Map" << std::endl;
+  //     exit(1);
+  //   }
+
+  //   // final result should be nnz and so will not go out of bounds on colInd
+  //   // up to nnz -1
+  //   nnzCount += numEntries;
+  //   //store into global vector
+  //   if (new_mapping_pattern)
+  //     localToGlobalUnsorted.emplace_back(ltgUnsorted[i]);
+  // } // for
 
   //by end of iterations nnzCount should equal nnz-otherwise there is an error
-  if (nnzCount != nnz)
+  if (nnzCount != nnz*dof)
   {
     std::cout << "Number of Entries Entered in Graph does not equal nnz " << std::endl;
     exit(1);
