@@ -101,7 +101,8 @@ using Tpetra_Operator       = Tpetra::Operator<Scalar_d, LO, GO, Node>;
 
 /* Belos aliases */
 using Belos_LinearProblem = Belos::LinearProblem<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
-
+using Belos_SolverFactory = Belos::SolverFactory<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
+using Belos_StatusTestResNorm = Belos::StatusTestResNorm<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
 /**************************************************************/
 /*                      Macro Definitions                     */
 /**************************************************************/

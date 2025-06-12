@@ -386,33 +386,52 @@ void trilinos_lhs_create(const int numGlobalNodes, const int numLocalNodes,
   }
 
   //check if trilinos methods are successful
-  if (Trilinos::K_graph->GlobalAssemble() != 0) //Calls FillComplete
+  if (Trilinos::K_graph->FillComplete() != 0)
   {
-    std::cout << "ERROR: Calling Fill Complete on Graph" << std::endl;
+    std::cout << "ERROR: Calling FillComplete on Graph" << std::endl;
     exit(1);
   }
+  // if (Trilinos::K_graph->GlobalAssemble() != 0) //Calls FillComplete
+  // {
+  //   std::cout << "ERROR: Calling Fill Complete on Graph" << std::endl;
+  //   exit(1);
+  // }
 
   //Trilinos::K_graph->OptimizeStorage(); //TODO: that causes it to fail
 
   // --- Create block finite element matrix from graph with fillcomplete ------
   // construct matrix from filled graph
-  Trilinos::K = new Epetra_FEVbrMatrix(Copy, *Trilinos::K_graph);
+  Trilinos::K = Teuchos::rcp(new Tpetra_CrsMatrix(Trilinos::K_graph));
+  // Trilinos::K = new Epetra_FEVbrMatrix(Copy, *Trilinos::K_graph);
+
   //construct RHS force vector F topology
-  Trilinos::F = new Epetra_FEVector(*Trilinos::blockMap);
+  Trilinos::F = Teuchos::rcp(new Tpetra_MultiVector(Trilinos::Map, 1));
+  // Trilinos::F = new Epetra_FEVector(*Trilinos::blockMap);
+
+  //construct RHS force vector ghostF topology
+  Trilinos::ghostF = Teuchos::rcp(new Tpetra_MultiVector(ghostMap, 1));
+
   // Construct a boundary vector for each coupled Neumann boundary condition
   Trilinos::bdryVec_list.clear();
   for (int i = 0; i < numCoupledNeumannBC; ++i)
   {
-    Trilinos::bdryVec_list.push_back(new Epetra_FEVector(*Trilinos::blockMap));
+    Trilinos::bdryVec_list.push_back(Teuchos::rcp(new Tpetra_MultiVector(Trilinos::Map, 1)));
+    // Trilinos::bdryVec_list.push_back(new Tpetra_MultiVector(Trilinos::Map,1));
   }
 
   // Initialize solution vector which is unique and does not include the ghost
   // indices using the unique map
-  Trilinos::X = new Epetra_Vector(*Trilinos::blockMap);
+  Trilinos::X = Teuchos::rcp(new Tpetra_Vector(Trilinos::Map));
+  // Trilinos::X = new Epetra_Vector(*Trilinos::blockMap);
+
   //initialize vector which will import the ghost nodes using the ghost map
-  Trilinos::ghostX = new Epetra_Vector(ghostMap);
+  Trilinos::ghostX = Teuchos::rcp(new Tpetra_Vector(ghostMap));
+  // Trilinos::ghostX = new Epetra_Vector(ghostMap);
+
   //Create importer of the two maps
-  Trilinos::Importer = new Epetra_Import(ghostMap, *Trilinos::blockMap);
+  Trilinos::Importer = Teuchos::rcp(new Tpetra_Import(ghostMap, Trilinos::Map));
+  // Trilinos::Importer = new Epetra_Import(ghostMap, *Trilinos::blockMap);
+
   //need to give v a map-same as F
   if (new_mapping_pattern)
     for (unsigned i = numLocalNodes; i < numGhostAndLocalNodes; ++i)
@@ -457,63 +476,96 @@ void trilinos_doassem_(int &numNodesPerElement, const int *eqN, const double *lK
   {
     // Sum into contributions from element node-global assemble will take those
     // from shared nodes on other processors since FE routine.
-    int error = Trilinos::K->BeginSumIntoGlobalValues(localToGlobal[a],
-            numNodesPerElement, &localToGlobal[0]);
+    // int error = Trilinos::K->BeginSumIntoGlobalValues(localToGlobal[a],
+    //         numNodesPerElement, &localToGlobal[0]);
 
-    if (error != 0)
+    // if (error != 0)
+    // {
+    //   std::cout << "ERROR: Setting block row and block column of summing into "
+    //             << "global values!"
+    //             << std::endl;
+    //   exit(1);
+    // }
+
+    GO globalRow = localToGlobal[a] * dof; // first dof of node a
+    
+    // Sum into each DoF for vector F, assuming numValuesPerID corresponds to dof values per node
+    for (int d = 0; d < dof; ++d)
     {
-      std::cout << "ERROR: Setting block row and block column of summing into "
-                << "global values!"
-                << std::endl;
-      exit(1);
+      Trilinos::F->sumIntoGlobalValue(globalRow + d, 0, lR[a * dof + d]);
     }
 
-    //submit global F values
-    int num_block_rows = 1; //number of global block rows put in 1 at a time
-    Trilinos::F->SumIntoGlobalValues (num_block_rows, &localToGlobal[a],
-            &numValuesPerID, &lR[a*dof]);
+    // For the matrix K update:
 
-    if (error != 0) //1 or more indices not associated with calling processor!
-    {
-      std::cout << error << std::endl;
-      std::cout << "ERROR: Summing into global vector values!" << std::endl;
-      exit(1);
-    }
-
-    //loop over local nodes for columns
-     std::vector<double> values(dof*dof);
+    // For each node b connected to node a, insert the block values
     for (int b = 0; b < numNodesPerElement; ++b)
     {
-      //transpose block since Trilinos takes in SerialMAtrix in column major
+      // The global column base for node b (all its dofs)
+      GO colBase = localToGlobal[b] * dof;
+
+      // We need to build row indices and values for each DoF row of node a
       for (int i = 0; i < dof; ++i)
       {
-        //premult by diagonal W so W(a) multiplies row a
+        GO globalRowK = globalRow + i;
+
+        std::vector<GO> cols(dof);
+        std::vector<Scalar_d> vals(dof);
+
         for (int j = 0; j < dof; ++j)
         {
-          //taking transpose of block so flip i & j
-          values[i*dof + j]
-              = lK[b*dof*dof*numNodesPerElement + a*dof*dof + j*dof + i];
+          cols[j] = colBase + j;
+          vals[j] = lK[a * dof * dof * numNodesPerElement + b * dof * dof + i * dof + j];
         }
-      }
-
-      error = Trilinos::K->SubmitBlockEntry(&values[0], dof, dof, dof);
-
-      if (error != 0)
-      {
-        std::cout << "ERROR: Inputting values of summing into matrix "
-                  << "global values!"
-                  << std::endl;
-        exit(1);
+        // sumIntoGlobalValues for this global row of matrix K
+        Trilinos::K->sumIntoGlobalValues(globalRowK, cols.size(), cols.data(), vals.data());
       }
     }
+    //submit global F values
+    // int num_block_rows = 1; //number of global block rows put in 1 at a time
+    // Trilinos::F->SumIntoGlobalValues (num_block_rows, &localToGlobal[a],
+    //         &numValuesPerID, &lR[a*dof]);
 
-    //finish submitting the block entry for the current row
-    error = Trilinos::K->EndSubmitEntries();
-    if (error != 0)
-    {
-      std::cout << "[trilinos_doassem_] ERROR: End submitting block entries!" << std::endl;
-      exit(1);
-    }
+    // if (error != 0) //1 or more indices not associated with calling processor!
+    // {
+    //   std::cout << error << std::endl;
+    //   std::cout << "ERROR: Summing into global vector values!" << std::endl;
+    //   exit(1);
+    // }
+
+    // //loop over local nodes for columns
+    //  std::vector<double> values(dof*dof);
+    // for (int b = 0; b < numNodesPerElement; ++b)
+    // {
+    //   //transpose block since Trilinos takes in SerialMAtrix in column major
+    //   for (int i = 0; i < dof; ++i)
+    //   {
+    //     //premult by diagonal W so W(a) multiplies row a
+    //     for (int j = 0; j < dof; ++j)
+    //     {
+    //       //taking transpose of block so flip i & j
+    //       values[i*dof + j]
+    //           = lK[b*dof*dof*numNodesPerElement + a*dof*dof + j*dof + i];
+    //     }
+    //   }
+
+    //   error = Trilinos::K->SubmitBlockEntry(&values[0], dof, dof, dof);
+
+    //   if (error != 0)
+    //   {
+    //     std::cout << "ERROR: Inputting values of summing into matrix "
+    //               << "global values!"
+    //               << std::endl;
+    //     exit(1);
+    //   }
+    // }
+
+    // //finish submitting the block entry for the current row
+    // error = Trilinos::K->EndSubmitEntries();
+    // if (error != 0)
+    // {
+    //   std::cout << "[trilinos_doassem_] ERROR: End submitting block entries!" << std::endl;
+    //   exit(1);
+    // }
   }
 } // trilinos_doassem_
 
@@ -548,66 +600,85 @@ void trilinos_global_solve_(const double *Val, const double *RHS, double *x,
   int nnzCount = 0; //cumulate count of block nnz per rows
   int count = 0;
   int numValuesPerID = dof; //dof values per id pointer to dof
-  std::vector<double> values(dof*dof); // holds local matrix entries
+  std::vector<Scalar_d> values(dof); // holds local matrix entries
+  std::vector<GO> colGIDK(dof); // holds global column indices for K
 
   // loop over block rows owned by current proc using localToGlobal index pointer
   //
   for (int i = 0; i < ghostAndLocalNodes; ++i) {
     int numEntries = nnzPerRow[i]; //block per of entries per row
+    const GO rowGID = localToGlobalUnsorted[i];
+    const GO* colGIDs = &globalColInd[nnzCount];
     // Copy global stiffness values
-    int error = Trilinos::K->BeginReplaceGlobalValues(localToGlobalUnsorted[i],
-            numEntries, &globalColInd[nnzCount]);
+    // int error = Trilinos::K->BeginReplaceGlobalValues(localToGlobalUnsorted[i],
+    //         numEntries, &globalColInd[nnzCount]);
 
-    // Need to check if globalColInd and localToGlobal equal for block diag
-    //
-    if (error != 0) {
-      std::cout << error << std::endl;
-      std::cout << "ERROR: Setting block row and block column of setting "
-                << "global values!"
-                << std::endl;
-      exit(1);
-    }
+    // // Need to check if globalColInd and localToGlobal equal for block diag
+    // //
+    // if (error != 0) {
+    //   std::cout << error << std::endl;
+    //   std::cout << "ERROR: Setting block row and block column of setting "
+    //             << "global values!"
+    //             << std::endl;
+    //   exit(1);
+    // }
 
     // Copy F values-loop over dof for bool
     //
-    int num_block_rows = 1; //number of global block rows put in 1 at a time
-
-    error = Trilinos::F->ReplaceGlobalValues (num_block_rows,
-            &localToGlobalUnsorted[i], &numValuesPerID, &RHS[i*dof]);
-
-    //check is bool true or false whether to give 0 if on diagonal 1
-    if (error != 0) {
-      std::cout << "ERROR: Setting global vector values!" << std::endl;
-      exit(1);
+    // int num_block_rows = 1; //number of global block rows put in 1 at a time
+    for (int j = 0; j < dof; ++j) {
+        Trilinos::ghostF->replaceGlobalValue(rowGID * dof + j, 0, RHS[i * dof + j]);
     }
 
+    // error = Trilinos::F->ReplaceGlobalValues (num_block_rows,
+    //         &localToGlobalUnsorted[i], &numValuesPerID, &RHS[i*dof]);
+
+    //check is bool true or false whether to give 0 if on diagonal 1
+    // if (error != 0) {
+    //   std::cout << "ERROR: Setting global vector values!" << std::endl;
+    //   exit(1);
+    // }
+    // Tpetra assembly from FSILS assembly
     for (int j = 0; j < numEntries; ++j) {
       for (int l = 0; l < dof; ++l) { //loop over dof for bool to contruct
+        GO rowGIDK = rowGID * dof + l; // global row index for K
         for (int m = 0; m < dof; ++m) {
-          values[l*dof + m] = Val[count*dof*dof + m*dof + l]; //transpose it
+          colGIDK[m] = colGIDs[j] * dof + m;
+          values[m] = Val[count*dof*dof + l*dof + m];
         }
-      }
-
-      // Submit square dof*dof blocks
-      error = Trilinos::K->SubmitBlockEntry(&values[0], dof, dof, dof);
-
-      if (error != 0) {
-        std::cout << "ERROR: Inputting values of setting matrix global "
-                  << "values!" << std::endl;
-        exit(1);
+        Trilinos::K->replaceGlobalValues(rowGIDK,
+          Teuchos::ArrayView<const GO>(colGIDK.data(), dof),
+          Teuchos::ArrayView<const Scalar_d>(values.data(), dof));
       }
       count++;
     }
 
-    error = Trilinos::K->EndSubmitEntries(); //for current block row
+    // for (int j = 0; j < numEntries; ++j) {
+    //   for (int l = 0; l < dof; ++l) { //loop over dof for bool to contruct
+    //     for (int m = 0; m < dof; ++m) {
+    //       values[l*dof + m] = Val[count*dof*dof + m*dof + l]; //transpose it
+    //     }
+    //   }
 
-    if (error != 0) {
-      std::cout << "ERROR: End submitting block entries!" << std::endl;
-      exit(1);
-    }
+    //   // Submit square dof*dof blocks
+    //   error = Trilinos::K->SubmitBlockEntry(&values[0], dof, dof, dof);
+
+    //   if (error != 0) {
+    //     std::cout << "ERROR: Inputting values of setting matrix global "
+    //               << "values!" << std::endl;
+    //     exit(1);
+    //   }
+    //   count++;
+    // }
+
+    // error = Trilinos::K->EndSubmitEntries(); //for current block row
+
+    // if (error != 0) {
+    //   std::cout << "ERROR: End submitting block entries!" << std::endl;
+    //   exit(1);
+    // }
     nnzCount += numEntries;
   }
-
   // Call solver code which assembles K and F for shared processors
   //
   bool flagFassem = false;
@@ -659,126 +730,206 @@ void trilinos_solve_(double *x, const double *dirW, double &resNorm,
   // routine will sum in contributions from elements on shared nodes amongst
   // processors
   //
-  int error = Trilinos::K->GlobalAssemble(false);
-  if (error != 0) {
-    std::cout << "ERROR: Global Assembling stiffness matrix" << std::endl;
-    exit(1);
-  }
+  Trilinos::K->fillComplete();
+  // int error = Trilinos::K->GlobalAssemble(false);
+  // if (error != 0) {
+  //   std::cout << "ERROR: Global Assembling stiffness matrix" << std::endl;
+  //   exit(1);
+  // }
 
   //very important for performance-makes memory contiguous
-  Trilinos::K->OptimizeStorage();
+  // Trilinos::K->OptimizeStorage();
 
   if (flagFassem) {
+    Tpetra::Export exporter(Trilinos::ghostF->getMap(), Trilinos::F->getMap());
+    Trilinos::F->doExport(*Trilinos::ghostF, exporter, Tpetra::ADD);
     //sum in values from shared nodes amongst the processors
-    error = Trilinos::F->GlobalAssemble();
+    // error = Trilinos::F->GlobalAssemble();
 
-    if (error != 0) {
-      std::cout << "ERROR: Global Assembling force vector" << std::endl;
-      exit(1);
-    }
+    // if (error != 0) {
+    //   std::cout << "ERROR: Global Assembling force vector" << std::endl;
+    //   exit(1);
+    // }
   }
 
   // Construct Jacobi scaling vector which uses dirW to take the Dirichlet BC
   // into account
   //
-  Epetra_Vector diagonal(*Trilinos::blockMap);
+  Teuchos::RCP<Tpetra_Vector> diagonal(Trilinos::Map);
+  // Epetra_Vector diagonal(*Trilinos::blockMap);
   constructJacobiScaling(dirW, diagonal);
 
   // Compute norm of preconditioned multivector F that we will be solving
   // problem with
-  Trilinos::F->Norm2(&initNorm); //pass preconditioned norm W*F
+  Trilinos::F->norm2(&initNorm);
+  // Trilinos::F->Norm2(&initNorm); //pass preconditioned norm W*F
 
   // Define Epetra_Operator which is global stiffness with coupled Neumann BC
   // contributions included
-  TrilinosMatVec K_bdry;
+  // TrilinosMatVec K_bdry;
+  Teuchos::RCP<TrilinosMatVec> K_bdry = Teuchos::rcp(new TrilinosMatVec());
 
   // Define linear problem if v is 0 does standard matvec product with K
-  Epetra_LinearProblem Problem(&K_bdry, Trilinos::X, Trilinos::F);
+  auto BelosProblem = Teuchos::rcp(new Belos_LinearProblem(K_bdry, Trilinos::X, Trilinos::F));
+  bool set = BelosProblem->setProblem();
+  if (!set) {
+    std::cerr << "ERROR: Belos LinearProblem setup failed!" << std::endl;
+    exit(1);
+  }
+  Teuchos::ParameterList belosParams;
+  belosParams.set("Verbosity", Belos::Errors + Belos::Warnings + Belos::StatusTestDetails);
+  belosParams.set("Convergence Tolerance", relTol); // relative tolerance for convergence
+  belosParams.set("Maximum Iterations", maxIters); // maximum number of iterations for any linear solver
+  belosParams.set("Implicit Residual Scaling", "Norm of RHS"); // Set convergence type as relative ||r|| <= relTol||b||
+  belosParams.set("Explicit Residual Scaling", "None");   
 
-  AztecOO Solver(Problem);
+  std::string solverType;
+  // Epetra_LinearProblem Problem(&K_bdry, Trilinos::X, Trilinos::F);
+  // AztecOO Solver(Problem);
 
   // Can set output solver parameter options below
+
 #ifdef NOOUTPUT
-  Solver.SetAztecOption(AZ_diagnostics, AZ_none);
-  Solver.SetAztecOption(AZ_output, AZ_none);
+  belosParams.set("Verbosity", Belos::None);
+  // Solver.SetAztecOption(AZ_diagnostics, AZ_none);
+  // Solver.SetAztecOption(AZ_output, AZ_none);
 #endif
 
-  setPreconditioner(precondType, Solver);
+  setPreconditioner(precondType, BelosProblem);
 
   // Set convergence type as relative ||r|| <= relTol||b||
-  Solver.SetAztecOption(AZ_conv, AZ_rhs);
+  
+  // Solver.SetAztecOption(AZ_conv, AZ_rhs);
 
   //Set solver options
   int numRestarts = 1; //also changes for gmres
   int maxItersPerRestart = maxIters;
 
   // Solver is GMRES by default
-  if (lsType ==TRILINOS_GMRES_SOLVER)
-  {
-    //special parameters to set orthog and kspace
-    numRestarts = maxIters; //different definition for gmres
-    Solver.SetAztecOption(AZ_orthog, AZ_modified); //modified GS
-    Solver.SetAztecOption(AZ_kspace, kspace);
-    Solver.SetAztecOption(AZ_solver, AZ_gmres);
-    maxItersPerRestart = kspace; //total maxIters is kspace * numRestarts
+  if (lsType == TRILINOS_GMRES_SOLVER) {
+    solverType = "Block GMRES";  // exact string expected by Belos::SolverFactory
+    belosParams.set("Num Blocks", kspace);  // like AztecOO's Krylov space
+    belosParams.set("Orthogonalization", "Modified Gram-Schmidt");
   }
-  else if (lsType == TRILINOS_BICGSTAB_SOLVER)
-    Solver.SetAztecOption(AZ_solver, AZ_bicgstab);
+  else if (lsType == TRILINOS_BICGSTAB_SOLVER) {
+    solverType = "BiCGStab";
+  }
+  else if (lsType == TRILINOS_CG_SOLVER) {
+    solverType = "Pseudoblock CG";
+  }
+  else {
+    throw std::runtime_error("Unknown solver type requested");
+  }
+  // if (lsType ==TRILINOS_GMRES_SOLVER)
+  // {
+  //   //special parameters to set orthog and kspace
+  //   numRestarts = maxIters; //different definition for gmres
+  //   // Solver.SetAztecOption(AZ_orthog, AZ_modified); //modified GS
+  //   // Solver.SetAztecOption(AZ_kspace, kspace);
+  //   // Solver.SetAztecOption(AZ_solver, AZ_gmres);
+  //   maxItersPerRestart = kspace; //total maxIters is kspace * numRestarts
+  //   belosParams.set("Num Blocks", maxItersPerRestart);
+  //   // belosParams.set("Convergence Tolerance", 1e-8);
+  //   belosParams.set("Verbosity", Belos::Errors + Belos::Warnings + Belos::StatusTestDetails);
+  //   // belosParams.set("Output Frequency", 1);
+  //   belosParams.set("Orthogonalization", "Modified Gram-Schmidt");
+  //   Belos::BlockGmresSolMgr<...> solverManager(BelosProblem, Teuchos::rcpFromRef(belosParams));
+  // }
+  // else if (lsType == TRILINOS_BICGSTAB_SOLVER)
+  //   Solver.SetAztecOption(AZ_solver, AZ_bicgstab);
 
-  else if (lsType == TRILINOS_CG_SOLVER)
-    Solver.SetAztecOption(AZ_solver, AZ_cg);
+  // else if (lsType == TRILINOS_CG_SOLVER)
+  //   Solver.SetAztecOption(AZ_solver, AZ_cg);
 
   //checkStatus to calculate residual norm
-  AztecOO_StatusTestResNorm restartResNorm(K_bdry, *Trilinos::X,
-                      (Epetra_Vector&) Trilinos::F[0], relTol);
-  restartResNorm.DefineResForm(AztecOO_StatusTestResNorm::Implicit,
-                 AztecOO_StatusTestResNorm::TwoNorm);
-  Solver.SetStatusTest(&restartResNorm);
+  Belos_SolverFactory factory;
+  auto solverManager = factory.create(solverType, Teuchos::rcpFromRef(belosParams));
+  solverManager->setProblem(BelosProblem);
 
-  int status;
-  numIters = 0;
-  solverTime = 0.0;
-  for (int iter = 0; iter < numRestarts; ++iter)
-  {
-    dB = (iter > 0) ? resNorm : initNorm;
-    if (numRestarts > 1) numIters += 1; //gmres case
-    status = Solver.Iterate(maxItersPerRestart, relTol);
-    numIters += Solver.NumIters();
-    resNorm = restartResNorm.GetResNormValue();
-    solverTime += Solver.SolveTime();
-    if (resNorm < relTol * initNorm) break;
+  // AztecOO_StatusTestResNorm restartResNorm(K_bdry, *Trilinos::X,
+  //                     (Epetra_Vector&) Trilinos::F[0], relTol);
+  // restartResNorm.DefineResForm(AztecOO_StatusTestResNorm::Implicit,
+  //                AztecOO_StatusTestResNorm::TwoNorm);
+  // Solver.SetStatusTest(&restartResNorm);
+
+  // Run the solver (solve() handles restarts internally)
+  converged = false;
+
+  Belos::ReturnType result = solverManager->solve();
+
+  if (result == Belos::Converged) {
+    converged = true;
   }
-  converged = (status == 0) ? true : false;
-  dB = 10 * log(restartResNorm.GetResNormValue()/dB); //fits with gmres def
+
+  // Get number of iterations performed
+  int numIters = solverManager->getNumIters();
+
+  // Get relative residual norm from the convergence test
+  auto statusTest = solverManager->getStatusTest();
+  auto resNormTest = Teuchos::rcp_dynamic_cast<const Belos_StatusTestResNorm>(statusTest);
+  if (resNormTest != Teuchos::null) {
+    double relResNorm = resNormTest->getCurrentRelResNorm();
+    dB = 10 * log(relResNorm/dB); 
+  } else {
+    std::cout << "[Belos Solver Error]: Could not retrieve relative residual norm from status test." << std::endl;
+  }
+  // int status;
+  // numIters = 0;
+  // solverTime = 0.0;
+  // for (int iter = 0; iter < numRestarts; ++iter)
+  // {
+  //   dB = (iter > 0) ? resNorm : initNorm;
+  //   if (numRestarts > 1) numIters += 1; //gmres case
+  //   status = Solver.Iterate(maxItersPerRestart, relTol);
+  //   numIters += Solver.NumIters();
+  //   resNorm = restartResNorm.GetResNormValue();
+  //   solverTime += Solver.SolveTime();
+  //   if (resNorm < relTol * initNorm) break;
+  // }
+  // converged = (status == 0) ? true : false;
+  // dB = 10 * log(restartResNorm.GetResNormValue()/dB); //fits with gmres def
+  
 
   //Right scaling so need to multiply x by diagonal
-  Trilinos::X->Multiply(1.0, *Trilinos::X, diagonal, 0.0);
+  Trilinos::X->elementWiseMultiply(1.0, *Trilinos::X, *diagonal, 0.0);
+  // Trilinos::X->Multiply(1.0, *Trilinos::X, diagonal, 0.0);
 
   //Fill ghost X with x communicating ghost nodes amongst processors
-  error = Trilinos::ghostX->Import(*Trilinos::X, *Trilinos::Importer, Insert);
-  //check imported correctly
-  if (error != 0)
-  {
-    std::cout << "ERROR: Map ghost node importer!" << std::endl;
-     exit(1);
-  }
+  Trilinos::ghostX->doImport(*Trilinos::X, *Trilinos::Importer, Tpetra::INSERT);
+  // error = Trilinos::ghostX->Import(*Trilinos::X, *Trilinos::Importer, Insert);
+  // //check imported correctly
+  // if (error != 0)
+  // {
+  //   std::cout << "ERROR: Map ghost node importer!" << std::endl;
+  //    exit(1);
+  // }
 
-    error = Trilinos::ghostX->ExtractCopy(x);
-   if (error != 0)
-   {
-     std::cout << "ERROR: Extracting copy of solution vector!" << std::endl;
-     exit(1);
+  auto localView = Trilinos::ghostX->getLocalViewHost(Tpetra::Access::ReadOnly);
+  size_t localLength = Trilinos::ghostX->getLocalLength();
+  if (localLength == 0) {
+    std::cout << "ERROR: Extracting copy of solution vector!" << std::endl;
+    exit(1);
   }
+  for (size_t i = 0; i < localLength; ++i) {
+    x[i] = localView(i, 0);
+  }
+  // error = Trilinos::ghostX->ExtractCopy(x);
+  // if (error != 0)
+  // {
+  //    std::cout << "ERROR: Extracting copy of solution vector!" << std::endl;
+  //    exit(1);
+  // }
   //set to 0 for the next time iteration
-  Trilinos::K->PutScalar(0.0);
-  Trilinos::F->PutScalar(0.0);
+  Trilinos::K->putScalar(0.0);
+  Trilinos::ghostF->putScalar(0.0);
+  Trilinos::F->putScalar(0.0);
   if (coupledBC) {
     for (auto bdryVec : Trilinos::bdryVec_list)
-      bdryVec->PutScalar(0.0);
+      bdryVec->putScalar(0.0);
 
   }
   //0 out initial guess for iteration
-  Trilinos::X->PutScalar(0.0);
+  Trilinos::X->putScalar(0.0);
   // Free memory if MLPrec is invoked
   if (ifpackPrec) {
       delete ifpackPrec;
@@ -791,7 +942,7 @@ void trilinos_solve_(double *x, const double *dirW, double &resNorm,
 } // trilinos_solve_
 
 // ----------------------------------------------------------------------------
-void setPreconditioner(int precondType, AztecOO &Solver)
+void setPreconditioner(int precondType, Teuchos::RCP<Belos_LinearProblem>& BelosProblem)
 {
   //initialize reordering for ILU/ILUT preconditioners
   Solver.SetAztecOption(AZ_reorder, 1);
