@@ -103,6 +103,12 @@ using Tpetra_Operator       = Tpetra::Operator<Scalar_d, LO, GO, Node>;
 using Belos_LinearProblem = Belos::LinearProblem<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
 using Belos_SolverFactory = Belos::SolverFactory<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
 using Belos_StatusTestResNorm = Belos::StatusTestResNorm<Scalar_d, Tpetra_MultiVector, Tpetra_Operator>;
+
+/* IFPACK2 preconditioner aliases */  
+using Ifpack2_Preconditioner = Ifpack2::Preconditioner<Scalar_d, LO, GO, Node>;
+
+/* MueLu preconditioner aliases */
+using MueLu_Preconditioner = MueLu::Preconditioner<Scalar_d, LO, GO>;
 /**************************************************************/
 /*                      Macro Definitions                     */
 /**************************************************************/
@@ -310,11 +316,14 @@ public:
 #endif
 
 // --- Define functions to only be called in C++ ------------------------------
-void setPreconditioner(int precondType, AztecOO &Solver);
+// void setPreconditioner(int precondType, AztecOO &Solver);
+void setPreconditioner(int precondType, Teuchos::RCP<Belos_LinearProblem>& BelosProblem);
 
-void setMLPrec(AztecOO &Solver);
+// void setMLPrec(AztecOO &Solver);
+void setMueLuPreconditioner(Teuchos::RCP<MueLu_Preconditioner>& MueLuPrec, 
+  const Teuchos::RCP<Tpetra_CrsMatrix>& A)
 
-void setIFPACKPrec(AztecOO &Solver);
+// void setIFPACKPrec(AztecOO &Solver);
 
 void checkDiagonalIsZero();
 

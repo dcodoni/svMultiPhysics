@@ -77,9 +77,11 @@ std::vector<Teuchos::RCP<Tpetra_MultiVector>> Trilinos::bdryVec_list;
 Teuchos::RCP<Tpetra_CrsGraph> Trilinos::K_graph;
 // Epetra_FECrsGraph *Trilinos::K_graph;
 
-ML_Epetra::MultiLevelPreconditioner* MLPrec = NULL;
+// ML_Epetra::MultiLevelPreconditioner* MLPrec = NULL;
+Teuchos::RCP<Tpetra_Operator> MueluPrec = Teuchos::null;
 
-Ifpack_Preconditioner* ifpackPrec = NULL;
+// Ifpack_Preconditioner* ifpackPrec = NULL;
+Teuchos::RCP<Ifpack2_Preconditioner> ifpackPrec = Teuchos::null;
 
 // --- Define global variables to be shared amongst the below functions -------
 
@@ -931,72 +933,137 @@ void trilinos_solve_(double *x, const double *dirW, double &resNorm,
   //0 out initial guess for iteration
   Trilinos::X->putScalar(0.0);
   // Free memory if MLPrec is invoked
-  if (ifpackPrec) {
-      delete ifpackPrec;
-      ifpackPrec = NULL;
-  }
-  if (MLPrec) {
-      delete MLPrec;
-      MLPrec = NULL;
-  }
+  // if (ifpackPrec) {
+  //     delete ifpackPrec;
+  //     ifpackPrec = NULL;
+  // }
+  // if (MLPrec) {
+  //     delete MLPrec;
+  //     MLPrec = NULL;
+  // }
 } // trilinos_solve_
 
 // ----------------------------------------------------------------------------
 void setPreconditioner(int precondType, Teuchos::RCP<Belos_LinearProblem>& BelosProblem)
 {
-  //initialize reordering for ILU/ILUT preconditioners
-  Solver.SetAztecOption(AZ_reorder, 1);
-  //solve precond structure into separate function
   if (precondType == TRILINOS_DIAGONAL_PRECONDITIONER ||
-      precondType == NO_PRECONDITIONER )
-    Solver.SetAztecOption(AZ_precond, AZ_none);
-  else if (precondType == TRILINOS_BLOCK_JACOBI_PRECONDITIONER)
-  {
-    Solver.SetAztecOption(AZ_precond, AZ_Jacobi);
-    checkDiagonalIsZero();
-    Solver.SetPrecMatrix(Trilinos::K);
+      precondType == NO_PRECONDITIONER) {
+    BlosProblem->setLeftPrec(Teuchos::null);
+    return;
   }
-  else if(precondType == TRILINOS_ILU_PRECONDITIONER)
-  {
-    checkDiagonalIsZero();
-    Solver.SetAztecOption(AZ_precond, AZ_dom_decomp);
-    Solver.SetAztecOption(AZ_subdomain_solve, AZ_ilu);
-    Solver.SetAztecOption(AZ_overlap,1);
-    Solver.SetAztecOption(AZ_graph_fill,0);
-    Solver.SetPrecMatrix(Trilinos::K);
-  }
-  else if (precondType == TRILINOS_ILUT_PRECONDITIONER)
-  {
-    checkDiagonalIsZero();
-    Solver.SetAztecOption(AZ_precond, AZ_dom_decomp);
-    Solver.SetAztecOption(AZ_subdomain_solve, AZ_ilut);
-    Solver.SetAztecOption(AZ_overlap,1);
-    Solver.SetAztecOption(AZ_graph_fill,4);
-    Solver.SetAztecParam(AZ_ilut_fill, 2);
-    Solver.SetAztecParam(AZ_drop, 1e-2);
 
-    // Sets the global stiffness prior to rank 1 update as the matrix off of
-    // which the preconditioner to calculated from to utilize the native
-    // preconditioners from trilinos
-    Solver.SetPrecMatrix(Trilinos::K);
-  }
-  else if (precondType == TRILINOS_IC_PRECONDITIONER)
-  {
+  // Create Ifpack2 preconditioner
+  Ifpack2::Factory factory;
+  // Teuchos::RCP<Ifpack2_Preconditioner> prec;
+  Teuchos::ParameterList precParams;    // Parameter list setup
+
+  if (precondType == TRILINOS_BLOCK_JACOBI_PRECONDITIONER) {
     checkDiagonalIsZero();
-    setIFPACKPrec(Solver);
-  }
-  else if (precondType == TRILINOS_ICT_PRECONDITIONER)
-  {
+    ifpackPrec = factory.create<Tpetra_CrsMatrix>("RELAXATION", Trilinos::K);
+    precParams.set("relaxation: type", "Jacobi");
+    precParams.set("relaxation: sweeps", 1);
+
+  } else if (precondType == TRILINOS_ILU_PRECONDITIONER) {
     checkDiagonalIsZero();
-    setIFPACKPrec(Solver); //add in parameter for string for different types
+    ifpackPrec = factory.create<Tpetra_CrsMatrix>("SCHWARZ", Trilinos::K);
+    precParams.set("schwarz: inner preconditioner name", "ILU");
+    precParams.set("schwarz: combine mode", "Add");
+    precParams.set("schwarz: overlap level", 1);
+    precParams.set("fact: level-of-fill", 0); // Classic ILU(0)
+
+  } else if (precondType == TRILINOS_ILUT_PRECONDITIONER) {
+    checkDiagonalIsZero();
+    ifpackPrec = factory.create<Tpetra_CrsMatrix>("SCHWARZ", Trilinos::K);
+    precParams.set("schwarz: overlap level", 1);
+    precParams.set("schwarz: inner preconditioner name", "ILUT");
+    precParams.set("schwarz: combine mode", "Add");
+    precParams.set("fact: ilut level-of-fill", 2.0);         // ILUT fill-level
+    precParams.set("fact: drop tolerance", 1e-2);            // Drop entries < tol
+
+  } else if (precondType == TRILINOS_IC_PRECONDITIONER) {
+    checkDiagonalIsZero();
+    ifpackPrec = factory.create<Tpetra_CrsMatrix>("SCHWARZ", Trilinos::K);
+    precParams.set("schwarz: overlap level", 0);
+    precParams.set("schwarz: inner preconditioner name", "IC"); // IC = incomplete Cholesky
+    precParams.set("fact: level-of-fill", 0);                   // level-of-fill for IC (0 = no fill)
+    precParams.set("fact: drop tolerance", 0.0);                // drop tolerance for IC
+
+  } else if (precondType == TRILINOS_ICT_PRECONDITIONER) {
+    checkDiagonalIsZero();
+    ifpackPrec = factory.create<Tpetra_CrsMatrix>("SCHWARZ", Trilinos::K);
+    precParams.set("schwarz: overlap level", 0);
+    precParams.set("schwarz: inner preconditioner name", "ICT"); // ICT = incomplete Cholesky with threshold
+    precParams.set("fact: level-of-fill", 2);                    // level-of-fill for ICT (0 = no fill)
+    precParams.set("fact: drop tolerance", 1e-2);                 // drop tolerance for ICT
+
+  } else if (precondType == TRILINOS_ML_PRECONDITIONER) {
+    // Teuchos::RCP<Tpetra_Operator> MueluPrec;
+    setMueLuPreconditioner(MueluPrec, Trilinos::K);
+    belosProblem->setLeftPrec(MueluPrec);
+    return;
+  } else {
+    throw std::runtime_error("[ERROR Trilinos] Unsupported preconditioner type.");
   }
-  else if (precondType == TRILINOS_ML_PRECONDITIONER)
-    setMLPrec(Solver);
-  else
-  {
-    std::cout << "ERROR: Preconditioner Type is undefined" << std::endl;
-    exit(1);
-  }
+
+  ifpackPrec->setParameters(precParams);
+  ifpackPrec->initialize();
+  ifpackPrec->compute();
+
+  belosProblem->setLeftPrec(ifpackPrec);
+
+  //initialize reordering for ILU/ILUT preconditioners
+  // Solver.SetAztecOption(AZ_reorder, 1);
+  // //solve precond structure into separate function
+  // if (precondType == TRILINOS_DIAGONAL_PRECONDITIONER ||
+  //     precondType == NO_PRECONDITIONER )
+  //   Solver.SetAztecOption(AZ_precond, AZ_none);
+  // else if (precondType == TRILINOS_BLOCK_JACOBI_PRECONDITIONER)
+  // {
+  //   Solver.SetAztecOption(AZ_precond, AZ_Jacobi);
+  //   checkDiagonalIsZero();
+  //   Solver.SetPrecMatrix(Trilinos::K);
+  // }
+  // else if(precondType == TRILINOS_ILU_PRECONDITIONER)
+  // {
+  //   checkDiagonalIsZero();
+  //   Solver.SetAztecOption(AZ_precond, AZ_dom_decomp);
+  //   Solver.SetAztecOption(AZ_subdomain_solve, AZ_ilu);
+  //   Solver.SetAztecOption(AZ_overlap,1);
+  //   Solver.SetAztecOption(AZ_graph_fill,0);
+  //   Solver.SetPrecMatrix(Trilinos::K);
+  // }
+  // else if (precondType == TRILINOS_ILUT_PRECONDITIONER)
+  // {
+  //   checkDiagonalIsZero();
+  //   Solver.SetAztecOption(AZ_precond, AZ_dom_decomp);
+  //   Solver.SetAztecOption(AZ_subdomain_solve, AZ_ilut);
+  //   Solver.SetAztecOption(AZ_overlap,1);
+  //   Solver.SetAztecOption(AZ_graph_fill,4);
+  //   Solver.SetAztecParam(AZ_ilut_fill, 2);
+  //   Solver.SetAztecParam(AZ_drop, 1e-2);
+
+  //   // Sets the global stiffness prior to rank 1 update as the matrix off of
+  //   // which the preconditioner to calculated from to utilize the native
+  //   // preconditioners from trilinos
+  //   Solver.SetPrecMatrix(Trilinos::K);
+  // }
+  // else if (precondType == TRILINOS_IC_PRECONDITIONER)
+  // {
+  //   checkDiagonalIsZero();
+  //   setIFPACKPrec(Solver);
+  // }
+  // else if (precondType == TRILINOS_ICT_PRECONDITIONER)
+  // {
+  //   checkDiagonalIsZero();
+  //   setIFPACKPrec(Solver); //add in parameter for string for different types
+  // }
+  // else if (precondType == TRILINOS_ML_PRECONDITIONER)
+  //   setMLPrec(Solver);
+  // else
+  // {
+  //   std::cout << "ERROR: Preconditioner Type is undefined" << std::endl;
+  //   exit(1);
+  // }
 } // setPreconditioner
 
 // ----------------------------------------------------------------------------
@@ -1004,108 +1071,148 @@ void setPreconditioner(int precondType, Teuchos::RCP<Belos_LinearProblem>& Belos
  * Tune parameters for htis and IFPACK
  * Ref: https://trilinos.org/oldsite/packages/ml/mlguide5.pdf
  */
-void setMLPrec(AztecOO &Solver)
+void setMueLuPreconditioner(Teuchos::RCP<MueLu_Preconditioner>& MueLuPrec, 
+  const Teuchos::RCP<Tpetra_CrsMatrix>& A)
 {
-  //break up into initializer
-  Teuchos::ParameterList MLList;
-  int *options = new int[AZ_OPTIONS_SIZE];
-  double *params = new double[AZ_PARAMS_SIZE];
-  ML_Epetra::SetDefaults("SA",MLList, options, params);
-  //MLList.set("XML input file", "/home/augustin/programs/MUPFES/trunk/examples/conf-files/ml_ParameterList_sGS.xml");
+    Teuchos::ParameterList mueluParams;
 
-  // ML general options
-  // output level, 0 being silent and 10 verbose
-  bool verbose = false;
-  if (verbose)
-    MLList.set("ML output", 10);
-  else
-    MLList.set("ML output", 0);
+    // Mimic your ML settings in MueLu parameter style:
 
-  // ML Cycle options
-  // maximum number of levels possible
-  MLList.set("max levels",4);
-  //If set to increasing, level 0 will correspond to the finest level.
-  //If set to decreasing,max levels - 1 will correspond to the finest level.
-  //Default: increasing.
-  MLList.set("increasing or decreasing","increasing");
+    mueluParams.set("verbosity", "none"); // or "high" for verbose output
+    mueluParams.set("max levels", 4);
+    mueluParams.set("coarse: max size", 15);
 
-  // Aggregation & prolongator parameters
-  // coarsening options:  Uncoupled, MIS, Uncoupled-MIS (uncoupled on the finer grids, then switch to MIS)
-  //MLList.set("aggregation: type", "Uncoupled");
-  MLList.set("aggregation: type", "MIS");
-  MLList.set("aggregation: threshold", 0.0);
+    // Aggregation type: "Uncoupled" or "MIS"
+    mueluParams.set("aggregation: type", "MIS");
 
-  // Smoother parameters
-  //common smoother options: Chebyshev, Gauss-Seidel, symmetric Gauss-Seidel, Jacobi, ILU, IC
-  MLList.set("smoother: ifpack type","ILU");
-  MLList.set("smoother: ifpack overlap",1);
-  MLList.sublist("smoother: ifpack list").set("fact: level-of-fill",1);
-  MLList.sublist("smoother: ifpack list").set("schwarz: reordering type","rcm");
-  // use both pre and post smoothing
-  MLList.set("smoother: pre or post", "both");
-  MLList.set("subsmoother: type", "symmetric Gauss-Seidel");
+    // Smoother type and parameters: you used ILU with overlap 1
+    mueluParams.set("smoother: type", "ILU");
+    mueluParams.set("smoother: overlap", 1);
+    mueluParams.sublist("smoother: params").set("fact: level-of-fill", 1);
+    mueluParams.sublist("smoother: params").set("schwarz: reordering type", "rcm");
 
-  //Coarse grid parameters
-  MLList.set("coarse: max size", 15);
-  // Coarse solver Default: AmesosKLU.
-  MLList.set("coarse: type","symmetric Gauss-Seidel");
+    // Use both pre and post smoothing
+    mueluParams.set("smoother: pre or post", "both");
 
-  // Load balancing options
-  MLList.set("repartition: enable",1);
-  MLList.set("repartition: max min ratio",1.3);
-  MLList.set("repartition: min per proc",500);
-  MLList.set("repartition: partitioner","Zoltan");
-  MLList.set("repartition: Zoltan dimensions",2);
+    // Coarse grid solver
+    mueluParams.set("coarse: type", "Chebyshev"); // or "symmetric Gauss-Seidel" if supported
+    mueluParams.set("coarse: chebyshev degree", 2);
+    mueluParams.set("coarse: chebyshev max eigenvalue", 20.0);
 
-  // create the preconditioner object based on options in MLList and compute hierarchy
-  if (MLPrec == NULL)
-    MLPrec = new ML_Epetra::MultiLevelPreconditioner(*Trilinos::K, MLList, false);
+    // Repartitioning options if needed
+    mueluParams.set("repartition: enable", true);
+    mueluParams.set("repartition: max min ratio", 1.3);
+    mueluParams.set("repartition: min per proc", 500);
+    mueluParams.set("repartition: partitioner", "Zoltan");
+    mueluParams.set("repartition: Zoltan dimensions", 2);
 
-  timecount = 0;
-  if (timecount == 0)
-    MLPrec->ComputePreconditioner();
-  else {//switch to recompute
-    MLPrec->ReComputePreconditioner();
-  }
-  Solver.SetPrecOperator(MLPrec);
+    // Create MueLu preconditioner from matrix and parameter list
+    MueLuPrec = MueLu::CreateTpetraPreconditioner(A, mueluParams);
 
-  //solver to separte function only recompute at separate time iter
-  timecount += 1;
+    // MueLuPrec is now a Tpetra::Operator that can be plug into BelosProblem
+}
+// void setMLPrec(AztecOO &Solver)
+// {
+//   //break up into initializer
+//   Teuchos::ParameterList MLList;
+//   int *options = new int[AZ_OPTIONS_SIZE];
+//   double *params = new double[AZ_PARAMS_SIZE];
+//   ML_Epetra::SetDefaults("SA",MLList, options, params);
+//   //MLList.set("XML input file", "/home/augustin/programs/MUPFES/trunk/examples/conf-files/ml_ParameterList_sGS.xml");
 
-  delete[] options;
-  delete[] params;
-}// setMLPrec
+//   // ML general options
+//   // output level, 0 being silent and 10 verbose
+//   bool verbose = false;
+//   if (verbose)
+//     MLList.set("ML output", 10);
+//   else
+//     MLList.set("ML output", 0);
+
+//   // ML Cycle options
+//   // maximum number of levels possible
+//   MLList.set("max levels",4);
+//   //If set to increasing, level 0 will correspond to the finest level.
+//   //If set to decreasing,max levels - 1 will correspond to the finest level.
+//   //Default: increasing.
+//   MLList.set("increasing or decreasing","increasing");
+
+//   // Aggregation & prolongator parameters
+//   // coarsening options:  Uncoupled, MIS, Uncoupled-MIS (uncoupled on the finer grids, then switch to MIS)
+//   //MLList.set("aggregation: type", "Uncoupled");
+//   MLList.set("aggregation: type", "MIS");
+//   MLList.set("aggregation: threshold", 0.0);
+
+//   // Smoother parameters
+//   //common smoother options: Chebyshev, Gauss-Seidel, symmetric Gauss-Seidel, Jacobi, ILU, IC
+//   MLList.set("smoother: ifpack type","ILU");
+//   MLList.set("smoother: ifpack overlap",1);
+//   MLList.sublist("smoother: ifpack list").set("fact: level-of-fill",1);
+//   MLList.sublist("smoother: ifpack list").set("schwarz: reordering type","rcm");
+//   // use both pre and post smoothing
+//   MLList.set("smoother: pre or post", "both");
+//   MLList.set("subsmoother: type", "symmetric Gauss-Seidel");
+
+//   //Coarse grid parameters
+//   MLList.set("coarse: max size", 15);
+//   // Coarse solver Default: AmesosKLU.
+//   MLList.set("coarse: type","symmetric Gauss-Seidel");
+
+//   // Load balancing options
+//   MLList.set("repartition: enable",1);
+//   MLList.set("repartition: max min ratio",1.3);
+//   MLList.set("repartition: min per proc",500);
+//   MLList.set("repartition: partitioner","Zoltan");
+//   MLList.set("repartition: Zoltan dimensions",2);
+
+//   // create the preconditioner object based on options in MLList and compute hierarchy
+//   if (MLPrec == NULL)
+//     MLPrec = new ML_Epetra::MultiLevelPreconditioner(*Trilinos::K, MLList, false);
+
+//   timecount = 0;
+//   if (timecount == 0)
+//     MLPrec->ComputePreconditioner();
+//   else {//switch to recompute
+//     MLPrec->ReComputePreconditioner();
+//   }
+//   Solver.SetPrecOperator(MLPrec);
+
+//   //solver to separte function only recompute at separate time iter
+//   timecount += 1;
+
+//   delete[] options;
+//   delete[] params;
+// }// setMLPrec
 
 // ----------------------------------------------------------------------------
 /**
  * pass in IC, ICT
  * pass in string for which to turn on right now set to IC
  */
-void setIFPACKPrec(AztecOO &Solver)
-{
-  //Ifpack Factory;
-  //std::string PrecType = "ILUT"; // exact solve on each subdomain
-  //int OverlapLevel = 0; // one row of overlap among the processes
-  //ifpackPrec = Factory.Create(PrecType, Trilinos::K, OverlapLevel);
-  //Teuchos::ParameterList List;
-  //List.set("fact: level-of-fill", 2);
-  //List.set("fact: drop tolerance", 1e-2);
-  //ifpackPrec->SetParameters(List);
-  //ifpackPrec->Initialize();
-  //ifpackPrec->Compute();
-  //Solver.SetPrecOperator(&*ifpackPrec);
+// void setIFPACKPrec(AztecOO &Solver)
+// {
+//   //Ifpack Factory;
+//   //std::string PrecType = "ILUT"; // exact solve on each subdomain
+//   //int OverlapLevel = 0; // one row of overlap among the processes
+//   //ifpackPrec = Factory.Create(PrecType, Trilinos::K, OverlapLevel);
+//   //Teuchos::ParameterList List;
+//   //List.set("fact: level-of-fill", 2);
+//   //List.set("fact: drop tolerance", 1e-2);
+//   //ifpackPrec->SetParameters(List);
+//   //ifpackPrec->Initialize();
+//   //ifpackPrec->Compute();
+//   //Solver.SetPrecOperator(&*ifpackPrec);
 
-  Teuchos::ParameterList List;
-  int OverlapLevel = 0;
-  ifpackPrec = new Ifpack_AdditiveSchwarz<Ifpack_ILUT> (Trilinos::K, OverlapLevel);
-  List.set("fact: ict level-of-fill", 2.0);
-  List.set("fact: drop tolerance", 1e-2);
-  ifpackPrec->SetParameters(List);
-  ifpackPrec->Initialize();
-  ifpackPrec->Compute();
-  Solver.SetPrecOperator(&*ifpackPrec);
+//   Teuchos::ParameterList List;
+//   int OverlapLevel = 0;
+//   ifpackPrec = new Ifpack_AdditiveSchwarz<Ifpack_ILUT> (Trilinos::K, OverlapLevel);
+//   List.set("fact: ict level-of-fill", 2.0);
+//   List.set("fact: drop tolerance", 1e-2);
+//   ifpackPrec->SetParameters(List);
+//   ifpackPrec->Initialize();
+//   ifpackPrec->Compute();
+//   Solver.SetPrecOperator(&*ifpackPrec);
 
-} // setIFPACKPrec
+// } // setIFPACKPrec
 
 // ----------------------------------------------------------------------------
 /**
@@ -1114,19 +1221,44 @@ void setIFPACKPrec(AztecOO &Solver)
  */
 void checkDiagonalIsZero()
 {
-  Epetra_Vector diagonal(*Trilinos::blockMap);
-  Trilinos::K->ExtractDiagonalCopy(diagonal);
-  bool isZeroDiag = false; //initialize to false
-  for (int i = 0; i < diagonal.MyLength(); ++i)
+  Teuchos::RCP<const Tpetra_Map> rowMap = Trilinos::K->getRowMap();
+  Tpetra_Vector diagonal(rowMap);
+  Trilinos::K->getLocalDiagCopy(diagonal);
+  bool isZeroDiag = false;
+  auto diagData = diagonal.getLocalViewHost(Tpetra::Access::ReadWrite);
+  for (size_t i = 0; i < diagData.extent(0); ++i)
   {
-    //if diagonal is 0 change it to be 1
-    if (diagonal[i] == 0.0)
+    if (diagData(i, 0) == 0.0)
     {
-      diagonal[i] = 1.0;
+      diagData(i, 0) = 1.0;
       isZeroDiag = true;
     }
   }
-  if (isZeroDiag) Trilinos::K->ReplaceDiagonalValues(diagonal);
+
+  if (isZeroDiag)
+  {
+    Teuchos::ArrayView<const typename Tpetra_Map::global_ordinal_type> gids = rowMap->getLocalElementList();
+    for (size_t i = 0; i < gids.size(); ++i)
+    {
+      typename Tpetra_Map::global_ordinal_type globalRow = gids[i];
+      double val = diagData(i, 0);
+      Trilinos::K->replaceGlobalValues(globalRow, Teuchos::arrayView(&globalRow, 1), Teuchos::arrayView(&val, 1));
+    }
+    Trilinos::K->fillComplete();
+  }
+  // Epetra_Vector diagonal(*Trilinos::blockMap);
+  // Trilinos::K->ExtractDiagonalCopy(diagonal);
+  // bool isZeroDiag = false; //initialize to false
+  // for (int i = 0; i < diagonal.MyLength(); ++i)
+  // {
+  //   //if diagonal is 0 change it to be 1
+  //   if (diagonal[i] == 0.0)
+  //   {
+  //     diagonal[i] = 1.0;
+  //     isZeroDiag = true;
+  //   }
+  // }
+  // if (isZeroDiag) Trilinos::K->ReplaceDiagonalValues(diagonal);
 } // void checkDiagonalIsZero()
 
 // ----------------------------------------------------------------------------
@@ -1136,51 +1268,93 @@ void checkDiagonalIsZero()
  * \param dirW    pass in array with Dirichlet boundary face nodes marked
  * \paramdiagonal diagonal scaling vector need to output to multiply solution by
  */
-void constructJacobiScaling(const double *dirW, Epetra_Vector &diagonal)
+void constructJacobiScaling(const double *dirW, Tpetra_Vector& diagonal)
 {
-  // Loop over nodes owned by that processor
-  //
+  Teuchos::RCP<const Tpetra_Map> map = diagonal.getMap();
+
+  // Step 1: Set Dirichlet weights
   for (int i = 0; i < localNodes; ++i) {
     for (int j = 0; j < dof; ++j) {
-      int error = diagonal.ReplaceGlobalValue(localToGlobalSorted[i],
-                          j, //block offset
-                          0, //multivector of 1 vector
-                          dirW[i*dof+j]); //value to insert
-      if (error != 0) {
-        std::cout << "ERROR: Setting Dirichlet diagonal scaling values!" << std::endl;
+      GO gid = localToGlobalSorted[i] * dof + j;
+      if (map->isNodeGlobalElement(gid)) {
+        size_t lid = map->getLocalElement(gid);
+        diagonal.replaceLocalValue(lid, dirW[i * dof + j]);
+      } else {
+        std::cerr << "[ERROR] Setting Dirichlet diagonal scaling value failed at GID " 
+                  << gid << std::endl;
         exit(1);
       }
     }
   }
 
-  //Extract diagonal of K
-  Epetra_Vector Kdiag(*Trilinos::blockMap);
-  Trilinos::K->ExtractDiagonalCopy(Kdiag);
-  for (int i = 0; i < Kdiag.MyLength(); ++i)
-  {
-    if (Kdiag[i] == 0.0) Kdiag[i] = 1.0;
-    Kdiag[i] = 1 / sqrt(abs(Kdiag[i])); //Jacobi scaling 1 / sqrt|aii|
+  // Step 2: Extract and modify diagonal of K
+  Tpetra_Vector Kdiag(Trilinos::K->getRowMap());
+  Trilinos::K->getLocalDiagCopy(Kdiag);
+
+  auto KdiagView = Kdiag.getLocalViewHost(Tpetra::Access::ReadWrite);
+  for (size_t i = 0; i < KdiagView.extent(0); ++i) {
+    if (KdiagView(i, 0) == 0.0)
+      KdiagView(i, 0) = 1.0;
+    KdiagView(i, 0) = 1.0 / std::sqrt(std::abs(KdiagView(i, 0)));
   }
 
-  //multiply the two vectors together
-  diagonal.Multiply(1.0, diagonal, Kdiag, 0.0);
+  // Step 3: diagonal = diagonal * Kdiag (element-wise)
+  diagonal.elementWiseMultiply(1.0, diagonal, Kdiag, 0.0);
 
-  //Multiply K and Fon the left by diagonal
-  //Let diag = W, solving W*K*W*y = W*F, where X = W*y
-  Trilinos::K->LeftScale(diagonal);
+  // Step 4: Apply scaling to K and F
+  Trilinos::K->leftScale(diagonal);
+  Trilinos::F->elementWiseMultiply(1.0, diagonal, *Trilinos::F, 0.0);
+  Trilinos::K->rightScale(diagonal);
 
-  // Elem by elem multiplication to support diagonal matrix multiply of vector
-  // this -> 0.0*this + 1.0*F*diag
-  Trilinos::F->Multiply(1.0, *Trilinos::F, diagonal, 0.0);
-
-  //Right scaling of K need to multiply solution vector as well
-  Trilinos::K->RightScale(diagonal);
-
-  //Need to multiply v in vv' by diagonal
+  // Step 5: Scale boundary vectors if coupledBC is set
   if (coupledBC) {
-    for (auto bdryVec : Trilinos::bdryVec_list)
-      bdryVec->Multiply(1.0, *bdryVec, diagonal, 0.0);
+    for (auto bdryVec : Trilinos::bdryVec_list) {
+      bdryVec->elementWiseMultiply(1.0, diagonal, *bdryVec, 0.0);
+    }
   }
+  // // Loop over nodes owned by that processor
+  // //
+  // for (int i = 0; i < localNodes; ++i) {
+  //   for (int j = 0; j < dof; ++j) {
+  //     int error = diagonal.ReplaceGlobalValue(localToGlobalSorted[i],
+  //                         j, //block offset
+  //                         0, //multivector of 1 vector
+  //                         dirW[i*dof+j]); //value to insert
+  //     if (error != 0) {
+  //       std::cout << "ERROR: Setting Dirichlet diagonal scaling values!" << std::endl;
+  //       exit(1);
+  //     }
+  //   }
+  // }
+
+  // //Extract diagonal of K
+  // Epetra_Vector Kdiag(*Trilinos::blockMap);
+  // Trilinos::K->ExtractDiagonalCopy(Kdiag);
+  // for (int i = 0; i < Kdiag.MyLength(); ++i)
+  // {
+  //   if (Kdiag[i] == 0.0) Kdiag[i] = 1.0;
+  //   Kdiag[i] = 1 / sqrt(abs(Kdiag[i])); //Jacobi scaling 1 / sqrt|aii|
+  // }
+
+  // //multiply the two vectors together
+  // diagonal.Multiply(1.0, diagonal, Kdiag, 0.0);
+
+  // //Multiply K and Fon the left by diagonal
+  // //Let diag = W, solving W*K*W*y = W*F, where X = W*y
+  // Trilinos::K->LeftScale(diagonal);
+
+  // // Elem by elem multiplication to support diagonal matrix multiply of vector
+  // // this -> 0.0*this + 1.0*F*diag
+  // Trilinos::F->Multiply(1.0, *Trilinos::F, diagonal, 0.0);
+
+  // //Right scaling of K need to multiply solution vector as well
+  // Trilinos::K->RightScale(diagonal);
+
+  // //Need to multiply v in vv' by diagonal
+  // if (coupledBC) {
+  //   for (auto bdryVec : Trilinos::bdryVec_list)
+  //     bdryVec->Multiply(1.0, *bdryVec, diagonal, 0.0);
+  // }
 } // void constructJacobiScaling()
 
 // ----------------------------------------------------------------------------
@@ -1229,47 +1403,61 @@ void trilinos_bc_create_(const std::vector<Array<double>> &v_list, bool &isCoupl
  */
 void trilinos_lhs_free_()
 {
-  if (MLPrec) {
-      MLPrec->DestroyPreconditioner();
-      delete MLPrec;
-      MLPrec = NULL;
-  }
-  if (Trilinos::blockMap) {
-      delete Trilinos::blockMap;
-      Trilinos::blockMap = NULL;
-  }
-  if (Trilinos::F) {
-      delete Trilinos::F;
-      Trilinos::F = NULL;
-  }
-  if (Trilinos::K) {
-      delete Trilinos::K;
-      Trilinos::K = NULL;
-  }
-  if (Trilinos::X) {
-      delete Trilinos::X;
-      Trilinos::X = NULL;
-  }
-  if (Trilinos::ghostX) {
-      delete Trilinos::ghostX;
-      Trilinos::ghostX = NULL;
-  }
-  if (Trilinos::Importer) {
-      delete Trilinos::Importer;
-      Trilinos::Importer = NULL;
-  }
-  if (Trilinos::bdryVec_list.size() > 0)
-  {
-    for (auto bdryVec : Trilinos::bdryVec_list)
-      delete bdryVec;
-      Trilinos::bdryVec_list.clear();
-  }
-  if (Trilinos::K_graph) {
-      delete Trilinos::K_graph;
-      Trilinos::K_graph = NULL;
-  }
+  MueluPrec = Teuchos::null;
+  Trilinos::Map = Teuchos::null;
+  Trilinos::ghostF = Teuchos::null;
+  Trilinos::F = Teuchos::null;
+  Trilinos::K = Teuchos::null;
+  Trilinos::X = Teuchos::null;
+  Trilinos::ghostX = Teuchos::null;
+  Trilinos::Importer = Teuchos::null;
+  Trilinos::K_graph = Teuchos::null;
 
+  Trilinos::bdryVec_list.clear(); // vector of RCPs will auto-deallocate
 }
+// void trilinos_lhs_free_()
+// {
+//   if (MLPrec) {
+//       MLPrec->DestroyPreconditioner();
+//       delete MLPrec;
+//       MLPrec = NULL;
+//   }
+//   if (Trilinos::blockMap) {
+//       delete Trilinos::blockMap;
+//       Trilinos::blockMap = NULL;
+//   }
+//   if (Trilinos::F) {
+//       delete Trilinos::F;
+//       Trilinos::F = NULL;
+//   }
+//   if (Trilinos::K) {
+//       delete Trilinos::K;
+//       Trilinos::K = NULL;
+//   }
+//   if (Trilinos::X) {
+//       delete Trilinos::X;
+//       Trilinos::X = NULL;
+//   }
+//   if (Trilinos::ghostX) {
+//       delete Trilinos::ghostX;
+//       Trilinos::ghostX = NULL;
+//   }
+//   if (Trilinos::Importer) {
+//       delete Trilinos::Importer;
+//       Trilinos::Importer = NULL;
+//   }
+//   if (Trilinos::bdryVec_list.size() > 0)
+//   {
+//     for (auto bdryVec : Trilinos::bdryVec_list)
+//       delete bdryVec;
+//       Trilinos::bdryVec_list.clear();
+//   }
+//   if (Trilinos::K_graph) {
+//       delete Trilinos::K_graph;
+//       Trilinos::K_graph = NULL;
+//   }
+
+// }
 
 // ----------------------------------------------------------------------------
 /**
