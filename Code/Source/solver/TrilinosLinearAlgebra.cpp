@@ -140,6 +140,15 @@ void TrilinosLinearAlgebra::initialize(ComMod& com_mod, eqType& lEq)
   impl->initialize(com_mod);
 }
 
+/// @brief Finalize Trilinos.
+void TrilinosLinearAlgebra::finalize()
+{
+  if (Kokkos::is_initialized())
+  {
+    Kokkos::finalize();
+  }
+}
+
 /// @brief Create an fsils linear algebra interface for assembly.
 void TrilinosLinearAlgebra::initialize_fsils(ComMod& com_mod, eqType& lEq)
 {
