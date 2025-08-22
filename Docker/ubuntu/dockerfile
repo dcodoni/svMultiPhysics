@@ -1,7 +1,7 @@
 # ================================================================================
 # BASE: Common base image with dependencies
 # ================================================================================
-FROM ubuntu:20.04 AS base
+FROM ubuntu:latest AS base
 
 # Any debian-based command will not prompt user-input
 ENV DEBIAN_FRONTEND=noninteractive
@@ -327,17 +327,26 @@ RUN cmake \
 -DCMAKE_C_COMPILER=/openmpi/bin/mpicc \
 -DCMAKE_CXX_COMPILER=/openmpi/bin/mpicxx \
 -DCMAKE_Fortran_COMPILER=/openmpi/bin/mpif90 \
--DTrilinos_ENABLE_Epetra=ON \
--DTrilinos_ENABLE_AztecOO=ON \
--DTrilinos_ENABLE_Ifpack=ON \
--DTrilinos_ENABLE_EpetraEXT=ON \
--DTrilinos_ENABLE_Amesos=ON \
--DTrilinos_ENABLE_ML=ON \
--DTrilinos_ENABLE_MueLU=ON \
+-DTrilinos_ENABLE_MueLu=ON \
 -DTrilinos_ENABLE_ROL=ON \
 -DTrilinos_ENABLE_Sacado=ON \
 -DTrilinos_ENABLE_Teuchos=ON \
 -DTrilinos_ENABLE_Zoltan=ON \
+-DTrilinos_ENABLE_Tpetra=ON \
+-DTrilinos_ENABLE_Belos=ON \
+-DTrilinos_ENABLE_Ifpack2=ON \
+-DTrilinos_ENABLE_Amesos2=ON \
+-DTrilinos_ENABLE_Zoltan2=ON \
+-DTrilinos_ENABLE_Kokkos=ON \
+-DKokkos_ENABLE_SERIAL=ON \
+-DTrilinos_ENABLE_KokkosKernels=ON \
+-DTrilinos_ENABLE_Xpetra=ON \
+-DXpetra_ENABLE_Kokkos_compat=ON \
+-DTrilinos_ENABLE_EXPLICIT_INSTANTIATION=ON \
+-DTpetra_INST_SERIAL=ON \
+-DTpetra_INST_DOUBLE=ON \
+-DTpetra_INST_INT_INT=ON \
+-DMueLu_ENABLE_EXPLICIT_INSTANTIATION=ON \
 -DTrilinos_ENABLE_Gtest=OFF /Trilinos && \
 make -j6 install
 
