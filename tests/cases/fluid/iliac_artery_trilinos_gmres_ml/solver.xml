@@ -68,7 +68,7 @@
 
    <LS type="GMRES" >
       <Linear_algebra type="trilinos" >
-         <Preconditioner> trilinos-ilut </Preconditioner>
+         <Preconditioner> trilinos-ml </Preconditioner>
       </Linear_algebra>
       <Max_iterations> 2000 </Max_iterations>
       <Tolerance> 1e-3 </Tolerance>
