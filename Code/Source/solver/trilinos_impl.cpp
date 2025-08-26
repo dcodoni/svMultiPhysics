@@ -586,8 +586,6 @@ void trilinos_solve_(const Teuchos::RCP<Trilinos> &trilinos_, double *x, const d
   belosParams.set("Output Style", 1);  
   belosParams.set("Convergence Tolerance", relTol);
   belosParams.set("Maximum Iterations", maxIters); 
-  belosParams.set("Implicit Residual Scaling", "Norm of RHS"); // Set convergence type as relative ||r|| <= relTol||b||
-  belosParams.set("Explicit Residual Scaling", "None");   
   
   std::string solverType;
 
@@ -1018,6 +1016,7 @@ class TrilinosLinearAlgebra::TrilinosImpl {
     void solve_assembled(ComMod& com_mod, eqType& lEq, const Vector<int>& incL, const Vector<double>& res);
     void init_dir_and_coup_neu(ComMod& com_mod, const Vector<int>& incL, const Vector<double>& res);
     void set_preconditioner(consts::PreconditionerType preconditioner);
+    void finalize();
 
     consts::PreconditionerType preconditioner_;
 
@@ -1173,6 +1172,14 @@ void TrilinosLinearAlgebra::TrilinosImpl::initialize(ComMod& com_mod)
 
   for (int a = 0; a < com_mod.tnNo; a++) {
     ltg_(com_mod.lhs.map(a)) = com_mod.ltg(a);
+  }
+}
+
+void TrilinosLinearAlgebra::TrilinosImpl::finalize()
+{
+  if (Kokkos::is_initialized())
+  {
+    Kokkos::finalize();
   }
 }
 

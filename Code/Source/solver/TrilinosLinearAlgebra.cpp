@@ -49,6 +49,7 @@ class TrilinosLinearAlgebra::TrilinosImpl {
     void set_preconditioner(consts::PreconditionerType prec_type) {};
     void solve(ComMod& com_mod, eqType& lEq, const Vector<int>& incL, const Vector<double>& res) {};
     void solve_assembled(ComMod& com_mod, eqType& lEq, const Vector<int>& incL, const Vector<double>& res) {};
+    void finalize(){};
 };
 #endif
 
@@ -143,10 +144,7 @@ void TrilinosLinearAlgebra::initialize(ComMod& com_mod, eqType& lEq)
 /// @brief Finalize Trilinos.
 void TrilinosLinearAlgebra::finalize()
 {
-  if (Kokkos::is_initialized())
-  {
-    Kokkos::finalize();
-  }
+  impl->finalize();
 }
 
 /// @brief Create an fsils linear algebra interface for assembly.
