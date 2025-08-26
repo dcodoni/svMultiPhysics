@@ -154,6 +154,10 @@ set(SV_KERNEL_DIR "${_kernel_lower}" CACHE STRING "The overall platform kernel b
 # Set the rest of the system variables
 if(APPLE)
 
+  # Get the current osx version
+  message(STATUS "CURRENT_OSX_VERSION: ${CURRENT_OSX_VERSION}")
+  message(STATUS "SV_OSX_MAJOR_VERSION: ${SV_OSX_MAJOR_VERSION}")
+  message(STATUS "SV_OSX_MINOR_VERSION: ${SV_OSX_MINOR_VERSION}")
   # Assuming use mac os if APPLE
   set(SV_PLATFORM_DIR "mac_osx" CACHE STRING "The distribution platform being used.")
 
