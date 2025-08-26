@@ -156,6 +156,12 @@ if(APPLE)
   # Assuming use mac os if APPLE
   set(SV_PLATFORM_DIR "mac_osx" CACHE STRING "The distribution platform being used.")
 
+  if(NOT DEFINED CURRENT_OSX_VERSION OR CURRENT_OSX_VERSION STREQUAL "")
+    execute_process(COMMAND sw_vers -productVersion
+                    OUTPUT_VARIABLE CURRENT_OSX_VERSION
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  endif()
+  
   # Get just major minor version of osx
   simvascular_get_major_minor_version(${CURRENT_OSX_VERSION} SV_OSX_MAJOR_VERSION SV_OSX_MINOR_VERSION)
 
@@ -166,7 +172,7 @@ if(APPLE)
   message(STATUS "CURRENT_OSX_VERSION: ${CURRENT_OSX_VERSION}")
   message(STATUS "SV_OSX_MAJOR_VERSION: ${SV_OSX_MAJOR_VERSION}")
   message(STATUS "SV_OSX_MINOR_VERSION: ${SV_OSX_MINOR_VERSION}")
-  
+
 elseif(LINUX)
 
   # To get the distribution and the version, we need to use lsb
