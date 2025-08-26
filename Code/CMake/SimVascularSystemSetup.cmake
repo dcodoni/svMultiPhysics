@@ -153,11 +153,6 @@ set(SV_KERNEL_DIR "${_kernel_lower}" CACHE STRING "The overall platform kernel b
 
 # Set the rest of the system variables
 if(APPLE)
-
-  # Get the current osx version
-  message(STATUS "CURRENT_OSX_VERSION: ${CURRENT_OSX_VERSION}")
-  message(STATUS "SV_OSX_MAJOR_VERSION: ${SV_OSX_MAJOR_VERSION}")
-  message(STATUS "SV_OSX_MINOR_VERSION: ${SV_OSX_MINOR_VERSION}")
   # Assuming use mac os if APPLE
   set(SV_PLATFORM_DIR "mac_osx" CACHE STRING "The distribution platform being used.")
 
@@ -167,6 +162,11 @@ if(APPLE)
   # Set the os version number
   set(SV_PLATFORM_VERSION_DIR "${SV_OSX_MAJOR_VERSION}.${SV_OSX_MINOR_VERSION}" CACHE STRING "The distribution platform version being used.")
 
+  # Get the current osx version
+  message(STATUS "CURRENT_OSX_VERSION: ${CURRENT_OSX_VERSION}")
+  message(STATUS "SV_OSX_MAJOR_VERSION: ${SV_OSX_MAJOR_VERSION}")
+  message(STATUS "SV_OSX_MINOR_VERSION: ${SV_OSX_MINOR_VERSION}")
+  
 elseif(LINUX)
 
   # To get the distribution and the version, we need to use lsb
