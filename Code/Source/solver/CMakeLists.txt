@@ -291,6 +291,7 @@ if(ENABLE_COVERAGE)
     # generate report
     COMMAND ${GENHTML} --demangle-cpp -o coverage coverage.info
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+    
 endif()
 
 # unit tests and Google Test
@@ -365,6 +366,12 @@ if(ENABLE_UNIT_TEST)
 
   # gtest_discover_tests(runUnitTest)
   add_test(NAME all_unit_tests COMMAND run_all_unit_tests)
+
+  # Apply coverage flags only if requested
+  if(ENABLE_COVERAGE)
+    target_compile_options(run_all_unit_tests PRIVATE -O0 -g -fprofile-arcs -ftest-coverage)
+    target_link_options(run_all_unit_tests PRIVATE -fprofile-arcs -ftest-coverage)
+  endif()
 
 endif()
 
