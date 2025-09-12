@@ -287,7 +287,7 @@ if(ENABLE_COVERAGE)
   # add coverage target
   add_custom_target(coverage
     # gather data
-    COMMAND ${LCOV} --directory . --capture --output-file coverage.info
+    COMMAND ${LCOV} --directory . --capture --output-file coverage.info --ignore-errors mismatch --rc geninfo_unexecuted_blocks=1
     # exclude externals
     COMMAND ${LCOV} --remove coverage.info -o coverage.info '/usr/*' '/opt/*' '${PROJECT_SOURCE_DIR}/ThirdParty/*' '/Library/*' 'v1/*'
     # generate report
