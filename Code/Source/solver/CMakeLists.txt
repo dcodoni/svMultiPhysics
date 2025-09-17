@@ -284,12 +284,15 @@ if(ENABLE_COVERAGE)
   find_program(LCOV lcov REQUIRED)
   find_program(GENHTML genhtml REQUIRED)
 
+  # get parent of project source dir
+  get_filename_component(PARENT_SOURCE_DIR "${PROJECT_SOURCE_DIR}" DIRECTORY)
+
   # add coverage target
   add_custom_target(coverage
     # gather data
-    COMMAND ${LCOV} --directory . --capture --output-file coverage.info --ignore-errors mismatch --rc geninfo_unexecuted_blocks=1
+    COMMAND ${LCOV} --directory . --capture --output-file coverage.info
     # exclude externals
-    COMMAND ${LCOV} --remove coverage.info -o coverage.info '/usr/*' '/opt/*' "${PROJECT_SOURCE_DIR}/ThirdParty/*" '/Library/*' 'v1/*' --ignore-errors unused
+    COMMAND ${LCOV} --remove coverage.info -o coverage.info '/usr/*' '/opt/*' "${PROJECT_SOURCE_DIR}/ThirdParty/*" "${PARENT_SOURCE_DIR}/tests/unitTests/*" '/Library/*' 'v1/*'
     # generate report
     COMMAND ${GENHTML} --demangle-cpp -o coverage coverage.info
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -334,14 +337,6 @@ if(ENABLE_UNIT_TEST)
   # include source files (same as what svMultiPhysics does except for main.cpp)
   add_executable(run_all_unit_tests ${CSRCS})
   
-  # Add unit test specific compilation flags for debugging and coverage
-  target_compile_options(run_all_unit_tests PRIVATE 
-    -O0           # No optimization for better debugging
-    -g            # Include debug symbols
-    -fprofile-arcs  # Generate profiling information
-    -ftest-coverage # Generate coverage data
-  )
-
   if(USE_TRILINOS)
     target_link_libraries(run_all_unit_tests ${Trilinos_LIBRARIES} ${Trilinos_TPL_LIBRARIES})
   endif()
