@@ -241,20 +241,12 @@ if(USE_TRILINOS)
   link_directories(${Trilinos_TPL_LIBRARY_DIRS})
 endif()
 
-# simvascular_add_executable(${SV_MULTIPHYSICS_EXE}
-#   SRCS ${CSRCS}
-#   DEV_SCRIPT_NAME "mysvmultiphysics"
-#   INSTALL_SCRIPT_NAME "svmultiphysics"
-#   INSTALL_COMP CoreExecutables
-#   INSTALL_DESTINATION ${SV_INSTALL_RUNTIME_DIR})
-
-# Build solver code (all sources except main.cpp) into a library
-list(REMOVE_ITEM CSRCS "main.cpp")
-add_library(solver_objs OBJECT ${CSRCS})
-add_library(solver STATIC $<TARGET_OBJECTS:solver_objs>)
-
-# Solver main executable
-add_executable(${SV_MULTIPHYSICS_EXE} main.cpp $<TARGET_OBJECTS:solver_objs>)
+simvascular_add_executable(${SV_MULTIPHYSICS_EXE}
+  SRCS ${CSRCS}
+  DEV_SCRIPT_NAME "mysvmultiphysics"
+  INSTALL_SCRIPT_NAME "svmultiphysics"
+  INSTALL_COMP CoreExecutables
+  INSTALL_DESTINATION ${SV_INSTALL_RUNTIME_DIR})
 
 target_link_libraries(${SV_MULTIPHYSICS_EXE}
   ${GLOBAL_LIBRARIES}
@@ -336,34 +328,22 @@ if(ENABLE_UNIT_TEST)
     message(STATUS "TEST_SOURCE: ${TEST_SOURCE}")
   endforeach()  
   
-  # list(REMOVE_ITEM CSRCS "main.cpp")
-  # list(APPEND CSRCS ${TEST_SOURCES})
+  list(REMOVE_ITEM CSRCS "main.cpp")
+  list(APPEND CSRCS ${TEST_SOURCES})
 
   # include source files (same as what svMultiPhysics does except for main.cpp)
-  # add_executable(run_all_unit_tests ${CSRCS})
-  add_executable(run_all_unit_tests ${TEST_SOURCES})
-
-  # Remove coverage flags from unit tests
-  if(ENABLE_COVERAGE)
-    target_compile_options(run_all_unit_tests PRIVATE -U_FORTIFY_SOURCE)
-    target_compile_options(run_all_unit_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O0>)
-    target_compile_options(run_all_unit_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-g>)
-    # explicitly disable coverage
-    target_compile_options(run_all_unit_tests PRIVATE -fno-profile-arcs -fno-test-coverage)
-    target_link_options(run_all_unit_tests PRIVATE -fno-profile-arcs -fno-test-coverage)
+  add_executable(run_all_unit_tests ${CSRCS})
+  
+  if(USE_TRILINOS)
+    target_link_libraries(run_all_unit_tests ${Trilinos_LIBRARIES} ${Trilinos_TPL_LIBRARIES})
   endif()
 
-  # if(USE_TRILINOS)
-  #   target_link_libraries(run_all_unit_tests ${Trilinos_LIBRARIES} ${Trilinos_TPL_LIBRARIES})
-  # endif()
-
-  # if(USE_PETSC)
-  #   target_link_libraries(run_all_unit_tests ${PETSC_LIBRARY_DIRS})
-  # endif()
+  if(USE_PETSC)
+    target_link_libraries(run_all_unit_tests ${PETSC_LIBRARY_DIRS})
+  endif()
 
   # libraries
   target_link_libraries(run_all_unit_tests
-    solver
     ${GLOBAL_LIBRARIES}
     ${INTELRUNTIME_LIBRARIES}
     ${ZLIB_LIBRARY}
@@ -375,29 +355,17 @@ if(ENABLE_UNIT_TEST)
     ${TINYXML_LIBRARY_NAME}
     ${SV_LIB_LINEAR_SOLVER_NAME}${SV_MPI_NAME_EXT}
     ${VTK_LIBRARIES}
-    gtest
-    GTest::gtest_main 
-    pthread 
   )
 
-  if(USE_TRILINOS)
-    target_link_libraries(run_all_unit_tests ${Trilinos_LIBRARIES} ${Trilinos_TPL_LIBRARIES})
-  endif()
-
-  if(USE_PETSC)
-    target_link_libraries(run_all_unit_tests ${PETSC_LIBRARY_DIRS})
-  endif()
-
   # link Google Test
-  # target_link_libraries(
-  #   run_all_unit_tests
-  #   gtest
-  #   GTest::gtest_main 
-  #   pthread   # link pthread on ubuntu20
-  # )
+  target_link_libraries(
+    run_all_unit_tests
+    gtest
+    GTest::gtest_main 
+    pthread   # link pthread on ubuntu20
+  )
 
   # gtest_discover_tests(runUnitTest)
   add_test(NAME all_unit_tests COMMAND run_all_unit_tests)
 
 endif()
-
