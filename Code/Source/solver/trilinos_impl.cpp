@@ -581,11 +581,14 @@ void trilinos_solve_(const Teuchos::RCP<Trilinos> &trilinos_, double *x, const d
                 + Belos::StatusTestDetails  
                 + Belos::IterationDetails;         
 
+  int maxRestarts = int(maxIters / kspace)+1;
+
   belosParams.set("Verbosity", verbosity);
   belosParams.set("Output Frequency", 1);
   belosParams.set("Output Style", 1);  
   belosParams.set("Convergence Tolerance", relTol);
   belosParams.set("Maximum Iterations", maxIters); 
+  belosParams.set("Maximum Restarts", maxRestarts);
   
   std::string solverType;
 
