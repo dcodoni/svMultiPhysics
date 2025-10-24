@@ -593,7 +593,15 @@ void trilinos_solve_(const Teuchos::RCP<Trilinos> &trilinos_, double *x, const d
 
   // Run the solver (solve() handles restarts internally)
   converged = false;
+
+  Teuchos::Time timer("Belos Solve Timer");
+  timer.start();
+
   Belos::ReturnType result = solverManager->solve();
+  
+  timer.stop();
+
+  solverTime = timer.totalElapsedTime();
 
   if (result == Belos::Converged) {
     converged = true;
@@ -735,7 +743,9 @@ void setMueLuPreconditioner(Teuchos::RCP<MueLu_Preconditioner> &MueLuPrec,
                             const Teuchos::RCP<Tpetra_CrsMatrix> &A)
 {
   // MueLuPrec is now a Tpetra::Operator that can be plug into BelosProblem
-  // The following parameters proved to be generally good for big FSI problems
+  std::string optionsFile = "mueluOptions.xml";
+
+  // The following built-in parameters proved to be generally good for big FSI problems
   Teuchos::ParameterList mueluParams;
 
   mueluParams.set("verbosity", "none");
@@ -775,7 +785,28 @@ void setMueLuPreconditioner(Teuchos::RCP<MueLu_Preconditioner> &MueLuPrec,
   mueluParams.set("coarse: max size", 2000);
 
   // Create MueLu preconditioner from matrix and parameter list, as Tpetra::Operator
-  MueLuPrec = MueLu::CreateTpetraPreconditioner(Teuchos::rcp_static_cast<Tpetra_Operator>(A), mueluParams);
+  std::ifstream ifs(optionsFile.c_str());
+  if (ifs.good())
+  {
+    try
+    {
+      MueLuPrec = MueLu::CreateTpetraPreconditioner(
+          Teuchos::rcp_static_cast<Tpetra_Operator>(A), optionsFile);
+    }
+    catch (std::exception &e)
+    {
+      std::cerr << "[MueLu Warning]: failed to create MueLu from file '" << optionsFile
+                << "': " << e.what() << "\n  Falling back to built-in parameters.\n";
+      MueLuPrec = MueLu::CreateTpetraPreconditioner(
+          Teuchos::rcp_static_cast<Tpetra_Operator>(A), mueluParams);
+    }
+  }
+  else
+  {
+    MueLuPrec = MueLu::CreateTpetraPreconditioner(
+        Teuchos::rcp_static_cast<Tpetra_Operator>(A), mueluParams);
+  }
+
 }
 
 // ----------------------------------------------------------------------------
