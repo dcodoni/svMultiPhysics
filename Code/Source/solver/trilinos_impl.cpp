@@ -165,17 +165,19 @@ void trilinos_lhs_create(const Teuchos::RCP<Trilinos> &trilinos_, const int numG
   for (unsigned i = 0; i < numLocalNodes; ++i)
   {
     // any nodes following are ghost nodes so that subset
-    localToGlobalSorted.emplace_back(ltgSorted[i]);
     for (int d = 0; d < dof; ++d)
     {
       globalDofGIDs.emplace_back(ltgSorted[i] * dof + d);
     }
   }
-  for (GO node_gid : ltgSorted)
+
+  for (unsigned i = 0; i < numGhostAndLocalNodes; ++i)
   {
+    localToGlobalSorted.emplace_back(ltgSorted[i]);
+    localToGlobalUnsorted.emplace_back(ltgUnsorted[i]);
     for (int d = 0; d < dof; ++d)
     {
-      globalGhostDofGIDs.emplace_back(node_gid * dof + d);
+      globalGhostDofGIDs.emplace_back(ltgSorted[i] * dof + d);
     }
   }
 
@@ -197,24 +199,32 @@ void trilinos_lhs_create(const Teuchos::RCP<Trilinos> &trilinos_, const int numG
   /*
     Graph construction  
   */
-  // Calculate nnzPerRow to pass into graph constructor
-  // Note: nnzPerDofRow is just used to allocate the graph
-  // nnzPerRow is the important value used for getting the column indices
-  nnzPerRow.clear();
-  nnzPerDofRow.clear();
-  nnzPerRow.reserve(numGhostAndLocalNodes);
-  nnzPerDofRow.reserve(numGhostAndLocalNodes * dof);
+  // Calculate nnzPerDofRow to pass into graph constructor
+  std::unordered_map<GO, size_t> gidToUnsortedIndex;
+  gidToUnsortedIndex.reserve(ltgUnsorted.size());
+  for (size_t i = 0; i < ltgUnsorted.size(); ++i)
+    gidToUnsortedIndex[ltgUnsorted[i]] = i;
 
-  for (unsigned i = 0; i < numLocalNodes; ++i)
+  const LO numLocalDofs = trilinos_->Map->getLocalNumElements();
+  nnzPerDofRow.clear();
+  nnzPerDofRow.reserve(numLocalDofs);
+
+  for (LO lid = 0; lid < numLocalDofs; ++lid)
   {
-    nnzPerRow.emplace_back(rowPtr[i + 1] - rowPtr[i]);
-    for (int d = 0; d < dof; ++d)
+    GO dofGid = trilinos_->Map->getGlobalElement(lid);
+    GO nodeGid = dofGid / dof; 
+    int d = dofGid % dof;
+
+    auto it = gidToUnsortedIndex.find(nodeGid);
+    if (it == gidToUnsortedIndex.end())
     {
-      nnzPerDofRow.emplace_back((rowPtr[i + 1] - rowPtr[i]) * dof * 5); // the *5 allows for more space to be allocated
-                                                                        // the calculation should have been exact but it
-                                                                        // seems to be off somehow (Epetra was less strict
-                                                                        // allowing for more flexibility in the graph structure)
+      std::cerr << "[ERROR] nodeGid " << nodeGid << " not found in ltgUnsorted\n";
+      continue;
     }
+
+    size_t unsortedIdx = it->second;
+    int numNodeCols = rowPtr[unsortedIdx + 1] - rowPtr[unsortedIdx];
+    nnzPerDofRow.emplace_back(numNodeCols * dof);
   }
 
   // Construct graph based on nnz per row
@@ -234,40 +244,26 @@ void trilinos_lhs_create(const Teuchos::RCP<Trilinos> &trilinos_, const int numG
   } 
   
   //loop over block rows owned by current proc using localToGlobal index pointer
-  for (unsigned i = 0; i < numGhostAndLocalNodes; ++i)
-  {
-    if (i >= numLocalNodes){
-      nnzPerRow.emplace_back(rowPtr[i+1] - rowPtr[i]);
-      nnzPerDofRow.emplace_back((rowPtr[i+1] - rowPtr[i]) * dof);
-    }
+  for (size_t i = 0; i < numGhostAndLocalNodes; ++i) {
+      GO nodeGID = ltgUnsorted[i];
+      int numEntries = rowPtr[i+1] - rowPtr[i];
 
-    GO nodeGID = ltgUnsorted[i]; // node-based global index
+      for (int d = 0; d < dof; ++d) {
+          GO rowGID = nodeGID * dof + d;
+          std::vector<GO> rowCols(numEntries*dof);
 
-    for (int d = 0; d < dof; ++d)
-    {
-      GO rowGID = nodeGID * dof + d;
+          for (int j = 0; j < numEntries; ++j) {
+              GO colNode = globalColInd[nnzCount + j];
+              for (int col_d = 0; col_d < dof; ++col_d)
+                  rowCols[j*dof + col_d] = colNode * dof + col_d;
+          }
 
-      int numEntries = nnzPerRow[i];
-      std::vector<GO> rowCols(numEntries*dof);
-
-      for (int j = 0; j < numEntries; ++j)
-      {
-        GO colNode = globalColInd[nnzCount + j];
-      
-        for (int col_d = 0; col_d < dof; ++col_d)
-        {
-          rowCols[j * dof + col_d] = colNode * dof + col_d;
-        }
+          trilinos_->K_graph->insertGlobalIndices(rowGID, rowCols);
       }
-      // Flatten the entries to dof-aware indices
-      trilinos_->K_graph->insertGlobalIndices(rowGID, rowCols);
-    }
-    nnzCount += nnzPerRow[i]; // globalColInd contains indices without dof
-
-    localToGlobalUnsorted.emplace_back(ltgUnsorted[i]);
+      nnzCount += numEntries;
   }
 
-  //by end of iterations nnzCount should equal nnz-otherwise there is an error
+  // by end of iterations nnzCount should equal nnz-otherwise there is an error
   // Dofs are not counted in nnzCount, so we do not multiply by dof
   if (nnzCount != nnz)
   {
@@ -309,10 +305,6 @@ void trilinos_lhs_create(const Teuchos::RCP<Trilinos> &trilinos_, const int numG
 
   //Create importer of the two maps
   trilinos_->Importer = Teuchos::rcp(new Tpetra_Import(trilinos_->Map, trilinos_->ghostMap));
-
-  //need to give v a map-same as F
-  for (unsigned i = numLocalNodes; i < numGhostAndLocalNodes; ++i)
-    localToGlobalSorted.emplace_back(ltgSorted[i]);
 
 } // trilinos_lhs_create_
 
